@@ -2,10 +2,16 @@
 
 Unified reader and writer for all CASM (Coherent All-Sky Monitor) data products at OVRO.
 
-Three data products:
 - **Correlator visibilities** — binary `.dat` files (pre/post Jan 27 2026 formats)
 - **Voltage DADA dumps** — 4+4 bit complex `.dada` files (3-subband, 4096-byte headers)
 - **Filterbank files** — SIGPROC `.fil` format (read/write + quick-look plots)
+
+## Table of Contents
+
+- [Install](#install)
+- [Correlator Visibilities](#correlator-visibilities)
+- [Voltage DADA Files](#voltage-dada-files)
+- [Filterbank Files](#filterbank-files)
 
 ## Install
 
@@ -73,6 +79,8 @@ fmt = load_format("post_jan27_2026")       # built-in
 fmt = load_format("/path/to/custom.json")  # custom
 ```
 
+New correlator format (e.g., 256-antenna): add a JSON file to `casm_io/correlator/configs/` with `nsig`, `dt_raw_s`, `nchan`, frequency params. No code changes needed.
+
 ### Antenna mapping CSV
 
 The antenna mapping CSV maps hardware (SNAP board, ADC channel) to antennas and correlator inputs. Required columns: `antenna_id`, `snap_id`, `adc`, `packet_index`. Optional: `grid_code`, `kernel_index`, `pol`, `x_m`, `y_m`, `z_m`, `functional`.
@@ -83,6 +91,10 @@ When CAsMan is ready:
 ```bash
 casman export-mapping --format casm_io > antenna_mapping_2027.csv
 ```
+
+### Frequency order
+
+All correlator readers default to `freq_order='descending'` (native/raw channel order, 468.75 -> 375 MHz). Pass `freq_order='ascending'` to get 375 -> 468.75 MHz.
 
 ## Voltage DADA Files
 
@@ -117,6 +129,10 @@ print(raw['voltages'][0].shape)  # (100, 1024, 12) - SNAP 0 data
 ### Header trust
 
 DADA headers contain fields that are sometimes wrong. By default `trust_header=False` only uses verified fields (`UTC_START`, `TSAMP`, `NCHAN`, etc.) and substitutes known-good defaults for unreliable fields (`NANT`, `FILE_SIZE`, `SOURCE`, etc.). Set `trust_header=True` to use all header values as-is.
+
+### Frequency order
+
+Voltage readers default to `freq_order='descending'` (native 468.75 -> 375 MHz). Pass `freq_order='ascending'` to get 375 -> 468.75 MHz.
 
 ## Filterbank Files
 
@@ -162,42 +178,32 @@ plot_dedispersed_waterfall(
 )
 ```
 
+### Example script
+
+A CLI script for filterbank inspection is provided in `examples/inspect_filterbank.py`:
+
+```bash
+# Dedispersed 3-panel plot with time range
+python examples/inspect_filterbank.py \
+    --input beam.fil --dm 125.0 --time-range 15.5 17.5
+
+# Raw dynamic spectrum (no dedispersion)
+python examples/inspect_filterbank.py \
+    --input beam.fil --dm 125.0 --no-dedisperse
+
+# Custom output path and dB scale
+python examples/inspect_filterbank.py \
+    --input beam.fil --dm 125.0 --output frb.png --scale db
+```
+
+Options:
+- `--input` (required): path to `.fil` file
+- `--dm` (float, default 0.0): dispersion measure in pc/cm^3
+- `--time-range START END`: time window in seconds
+- `--no-dedisperse`: show raw dynamic spectrum even when `--dm` is set
+- `--output`: output PNG path (auto-generated from input filename if omitted)
+- `--scale`: `linear` (default) or `db`
+
 ### Backend traceability
 
 Both `read_filterbank` and `write_filterbank` return a `backend_used` field (`"sigpyproc"` or `"standalone"`). Use this to trace which code path ran if debugging issues.
-
-## Frequency order
-
-All readers default to `freq_order='descending'` (native/raw channel order, 468.75 -> 375 MHz). Pass `freq_order='ascending'` to get 375 -> 468.75 MHz.
-
-## Project structure
-
-```
-casm_io/
-    __init__.py          # version + convenience re-exports
-    constants.py         # OVRO location, frequency band, timing
-    correlator/
-        configs/         # pre_jan27_2026.json, post_jan27_2026.json
-        formats.py       # VisibilityFormat, load_format()
-        mapping.py       # AntennaMapping (from CSV)
-        baselines.py     # upper-triangular indexing utilities
-        reader.py        # read_visibilities(), discover_files()
-        writer.py        # write_npz(), read_npz()
-    voltage/
-        configs/         # dada_format.json
-        header.py        # parse_dada_header(), trusted/untrusted fields
-        unpack.py        # unpack_4bit() (4+4 bit complex)
-        reader.py        # read_dada_file(), read_voltage_dump()
-    filterbank/
-        header.py        # SIGPROC header parser/writer
-        reader.py        # read_filterbank() (sigpyproc + standalone)
-        writer.py        # write_filterbank() (sigpyproc + standalone)
-        plotting.py      # bandpass, timeseries, dynamic spectrum, FRB waterfall
-```
-
-## Adding new hardware configs
-
-**New correlator format** (e.g., 256-antenna): Add a JSON file to `casm_io/correlator/configs/` with `nsig`, `dt_raw_s`, `nchan`, frequency params. Load with `load_format("my_new_format")` or `load_format("/path/to/file.json")`.
-
-**New antenna mapping**: Create a CSV with required columns (`antenna_id`, `snap_id`, `adc`, `packet_index`). No code changes needed. Works for 16, 64, or 256 antennas.
-

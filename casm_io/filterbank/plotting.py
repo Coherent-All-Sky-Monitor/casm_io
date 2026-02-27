@@ -26,9 +26,47 @@ def _dm_delay_samples(dm: float, freq_mhz: np.ndarray, tsamp: float) -> np.ndarr
     return np.round(delays_s / tsamp).astype(int)
 
 
-def _dedisperse(data: np.ndarray, dm: float, freq_mhz: np.ndarray, tsamp: float) -> np.ndarray:
+def _dedisperse_sigpyproc(data: np.ndarray, dm: float, header: dict) -> np.ndarray:
     """
-    Dedisperse data by shifting channels.
+    Dedisperse using sigpyproc (circular shift, preserves length).
+
+    Parameters
+    ----------
+    data : np.ndarray
+        (nsamples, nchans) array.
+    dm : float
+        Dispersion measure in pc/cm^3.
+    header : dict
+        Filterbank header (needs fch1, foff, nchans, nbits, tsamp, tstart).
+
+    Returns
+    -------
+    np.ndarray
+        Dedispersed (nsamples, nchans) array (same length as input).
+    """
+    from sigpyproc.header import Header
+    from sigpyproc.block import FilterbankBlock
+
+    hdr = Header(
+        filename="",
+        data_type="filterbank",
+        nchans=header.get("nchans", data.shape[1]),
+        foff=header.get("foff", -1.0),
+        fch1=header.get("fch1", 0.0),
+        nbits=header.get("nbits", 32),
+        tsamp=header.get("tsamp", 1.0),
+        tstart=header.get("tstart", 60000.0),
+        nsamples=data.shape[0],
+    )
+    # sigpyproc expects (nchans, nsamples)
+    block = FilterbankBlock(data.T.astype(np.float32), hdr)
+    dd_block = block.dedisperse(dm)
+    return dd_block.data.T
+
+
+def _dedisperse_standalone(data: np.ndarray, dm: float, freq_mhz: np.ndarray, tsamp: float) -> np.ndarray:
+    """
+    Dedisperse by shifting channels and trimming edges.
 
     Parameters
     ----------
@@ -59,8 +97,43 @@ def _dedisperse(data: np.ndarray, dm: float, freq_mhz: np.ndarray, tsamp: float)
 
     out = np.zeros((out_len, len(freq_mhz)), dtype=data.dtype)
     for i, d in enumerate(delays):
-        out[:, i] = data[d : d + out_len, i]
+        shift = max_delay - d
+        out[:, i] = data[shift : shift + out_len, i]
     return out
+
+
+def _dedisperse(data: np.ndarray, dm: float, freq_mhz: np.ndarray, tsamp: float,
+                header: dict | None = None) -> np.ndarray:
+    """
+    Dedisperse data by shifting channels.
+
+    Tries sigpyproc first (circular shift, preserves length).
+    Falls back to standalone (trim edges) if sigpyproc unavailable.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        (nsamples, nchans) array.
+    dm : float
+        Dispersion measure in pc/cm^3.
+    freq_mhz : np.ndarray
+        Frequency axis in MHz.
+    tsamp : float
+        Sample time in seconds.
+    header : dict, optional
+        Filterbank header. Required for sigpyproc path.
+
+    Returns
+    -------
+    np.ndarray
+        Dedispersed array. Same length if sigpyproc, trimmed if standalone.
+    """
+    if header is not None:
+        try:
+            return _dedisperse_sigpyproc(data, dm, header)
+        except (ImportError, Exception):
+            pass
+    return _dedisperse_standalone(data, dm, freq_mhz, tsamp)
 
 
 def _time_range_to_slice(
@@ -236,11 +309,16 @@ def plot_dynamic_spectrum(
 
     # Dedispersion
     if dm is not None and dm > 0:
-        plot_data = _dedisperse(plot_data, dm, freqs, tsamp)
+        plot_data = _dedisperse(plot_data, dm, freqs, tsamp, header=header)
 
     times = get_time_axis(header, len(plot_data))
     if time_range is not None and time_range[0] <= 40000:
         times = times + time_range[0]
+
+    # Ensure frequency is ascending (low freq at bottom, high at top)
+    if len(freqs) > 1 and freqs[0] > freqs[-1]:
+        freqs = freqs[::-1]
+        plot_data = plot_data[:, ::-1]
 
     # Downsample for plotting
     t_factor = max(1, len(plot_data) // max_time_bins)
@@ -320,47 +398,45 @@ def plot_dedispersed_waterfall(
         s0, s1 = _time_range_to_slice(time_range, header, len(data))
         plot_data = plot_data[s0:s1]
 
-    dd_data = _dedisperse(plot_data, dm, freqs, tsamp)
+    dd_data = _dedisperse(plot_data, dm, freqs, tsamp, header=header)
     times = get_time_axis(header, len(dd_data))
     if time_range is not None and time_range[0] <= 40000:
         times = times + time_range[0]
 
+    # Ensure frequency is ascending (low freq at bottom, high at top)
+    if len(freqs) > 1 and freqs[0] > freqs[-1]:
+        freqs = freqs[::-1]
+        dd_data = dd_data[:, ::-1]
+
     dd_float = dd_data.astype(np.float32)
     ts = dd_float.mean(axis=1)
-    bp = dd_float.mean(axis=0)
 
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(3, 1, height_ratios=[1, 3, 1], hspace=0.05)
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 3], hspace=0.05)
 
     # Timeseries (top)
     ax_ts = fig.add_subplot(gs[0])
     ds = max(1, len(ts) // 2000)
     ax_ts.plot(times[::ds], ts[::ds], "k-", lw=0.5)
     ax_ts.set_ylabel("Counts")
-    ax_ts.set_title(f"DM = {dm:.2f} pc/cm³")
+    ax_ts.set_title(f"DM = {dm:.2f} pc/cm\u00b3")
     ax_ts.set_xlim(times[0], times[-1])
     ax_ts.tick_params(labelbottom=False)
 
-    # Waterfall (middle)
+    # Waterfall (bottom)
     ax_wf = fig.add_subplot(gs[1])
     t_factor = max(1, len(dd_data) // 2000)
     f_factor = max(1, len(freqs) // 1000)
     wf = dd_float[::t_factor, ::f_factor]
+    freqs_ds = freqs[::f_factor]
     vmin, vmax = np.percentile(wf, [1, 99])
     ax_wf.imshow(
         wf.T, aspect="auto", origin="lower",
-        extent=[times[0], times[-1], freqs[0], freqs[-1]],
+        extent=[times[0], times[-1], freqs_ds[0], freqs_ds[-1]],
         cmap=cmap, vmin=vmin, vmax=vmax,
     )
+    ax_wf.set_xlabel("Time (s)")
     ax_wf.set_ylabel("Frequency (MHz)")
-    ax_wf.tick_params(labelbottom=False)
-
-    # Bandpass (bottom)
-    ax_bp = fig.add_subplot(gs[2])
-    ax_bp.plot(freqs, bp, "b-", lw=0.8)
-    ax_bp.set_xlabel("Frequency (MHz)")
-    ax_bp.set_ylabel("Counts")
-    ax_bp.set_xlim(freqs[0], freqs[-1])
 
     plt.tight_layout()
 
