@@ -367,7 +367,7 @@ def plot_dedispersed_waterfall(
     cmap: str = "viridis",
 ) -> plt.Figure:
     """
-    3-panel FRB inspection plot: waterfall + timeseries + bandpass.
+    2-panel FRB inspection plot: timeseries + waterfall.
 
     Parameters
     ----------
