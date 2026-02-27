@@ -1,0 +1,15 @@
+{
+  "header_size": 4096,
+  "n_snap_slots": 11,
+  "n_adc_per_snap": 12,
+  "n_chan_per_subband": 1024,
+  "n_subbands": 3,
+  "n_chan_total": 3072,
+  "tsamp_us": 32.768,
+  "active_snaps": [0, 2, 4],
+  "freq_top_mhz": 468.75,
+  "freq_bottom_mhz": 375.0,
+  "chan_bw_mhz": 0.030517578125,
+  "native_order": "descending",
+  "subband_dirs": ["chan0_1023", "chan1024_2047", "chan2048_3071"]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "post_jan27_2026",
+  "description": "128 inputs (64 ant x 2 pol). Post Jan 27 2026. Integration 137.44s.",
+  "nsig": 128,
+  "dt_raw_s": 137.438953472,
+  "ntime_per_file": 32,
+  "nchan": 3072,
+  "chan_bw_mhz": 0.030517578125,
+  "freq_top_mhz": 468.75,
+  "freq_bottom_mhz": 375.0,
+  "native_order": "descending"
+}

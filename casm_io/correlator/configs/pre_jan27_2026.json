@@ -1,0 +1,12 @@
+{
+  "name": "pre_jan27_2026",
+  "description": "64 inputs (32 ant x 2 pol). Pre Jan 27 2026. Integration 34.36s.",
+  "nsig": 64,
+  "dt_raw_s": 34.359738368,
+  "ntime_per_file": 32,
+  "nchan": 3072,
+  "chan_bw_mhz": 0.030517578125,
+  "freq_top_mhz": 468.75,
+  "freq_bottom_mhz": 375.0,
+  "native_order": "descending"
+}

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casm_io"
+version = "0.1.0"
+description = "Unified reader and writer for all CASM data products"
+readme = "README.md"
+license = {text = "GPL-3.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Vishnu Balakrishnan", email = "vishnubk93@gmail.com"},
+    {name = "Liam Connor", email = "liam.dean.connor@gmail.com"},
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "astropy",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+sigpyproc = ["sigpyproc"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["casm_io*"]
+
+[tool.setuptools.package-data]
+"casm_io.correlator.configs" = ["*.json"]
+"casm_io.voltage.configs" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
