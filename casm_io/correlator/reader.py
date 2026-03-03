@@ -133,6 +133,7 @@ class VisibilityReader:
         time_end: str | datetime | None = None,
         time_tz: str = "UTC",
         nfiles: int | None = None,
+        skip_nfiles: int = 0,
         ref: int | None = None,
         targets: list[int] | None = None,
         freq_order: str = "descending",
@@ -152,6 +153,8 @@ class VisibilityReader:
         nfiles : int, optional
             Number of files to read from the start. Mutually exclusive
             with time_end.
+        skip_nfiles : int
+            Number of files to skip before reading. Requires nfiles.
         ref : int, optional
             Reference input index for baseline extraction.
         targets : list of int, optional
@@ -177,6 +180,8 @@ class VisibilityReader:
 
         if nfiles is not None and time_end is not None:
             raise ValueError("nfiles and time_end are mutually exclusive")
+        if skip_nfiles and nfiles is None:
+            raise ValueError("skip_nfiles requires nfiles")
 
         tz_obj = ZoneInfo(time_tz) if time_tz != "UTC" else timezone.utc
 
@@ -202,8 +207,11 @@ class VisibilityReader:
         data_start_unix = t0_unix
         data_end_unix = t0_unix + (self._max_idx + 1) * file_dur_s
 
+        _LOCAL_TZ = "America/Los_Angeles"
+
         if verbose:
-            print(f"Data span: {format_time_span(data_start_unix, data_end_unix)}")
+            print(f"Data span (UTC): {format_time_span(data_start_unix, data_end_unix)}")
+            print(f"Data span (PT):  {format_time_span(data_start_unix, data_end_unix, _LOCAL_TZ)}")
             print(f"Files available: {self.n_files} (indices 0-{self._max_idx})")
 
             # Timezone echo: show local and UTC times when non-UTC timezone used
@@ -238,6 +246,7 @@ class VisibilityReader:
             if utc_start_dt:
                 delta = utc_start_unix - t0_unix
                 start_file_idx = int(delta / file_dur_s)
+            start_file_idx += skip_nfiles
             needed_file_idxs = list(range(start_file_idx, start_file_idx + nfiles))
             utc_end_unix = t0_unix + (start_file_idx + nfiles) * file_dur_s
         else:
@@ -275,10 +284,10 @@ class VisibilityReader:
         if verbose:
             if nfiles is not None:
                 nfiles_start_unix = t0_unix + needed_file_idxs[0] * file_dur_s
-                print(f"Reading {nfiles} files starting from index {needed_file_idxs[0]}")
-                print(f"Time range: {format_time_span(nfiles_start_unix, utc_end_unix)}")
-                if time_tz != "UTC":
-                    print(f"Time range ({time_tz}): {format_time_span(nfiles_start_unix, utc_end_unix, time_tz)}")
+                skip_msg = f" (skipped {skip_nfiles})" if skip_nfiles else ""
+                print(f"Reading {nfiles} files starting from index {needed_file_idxs[0]}{skip_msg}")
+                print(f"Time range (UTC): {format_time_span(nfiles_start_unix, utc_end_unix)}")
+                print(f"Time range (PT):  {format_time_span(nfiles_start_unix, utc_end_unix, _LOCAL_TZ)}")
             else:
                 # Compute integration indices for verbose output
                 delta_start = utc_start_unix - t0_unix
