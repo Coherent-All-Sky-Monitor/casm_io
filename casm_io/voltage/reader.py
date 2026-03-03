@@ -16,6 +16,7 @@ import pandas as pd
 from .header import parse_dada_header, HEADER_SIZE
 from .unpack import unpack_4bit
 from .._progress import print_progress
+from .._results import SubbandResult, FullBandResult
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
@@ -176,7 +177,7 @@ class VoltageReader:
             cfg["chan_bw_mhz"], cfg["n_subbands"], freq_order,
         )
 
-        return dict(voltages=voltages, header=header, freq_mhz=freq_mhz)
+        return SubbandResult(voltages=voltages, header=header, freq_mhz=freq_mhz)
 
     def read_full_band(
         self,
@@ -316,7 +317,7 @@ class VoltageReader:
                         print(f"  Ant {int(row['antenna_id']):2d}: "
                               f"SNAP {snap} NOT LOADED — zeros")
 
-            return dict(
+            return FullBandResult(
                 voltages=ant_voltages,
                 header=first_header,
                 freq_mhz=freq_mhz,
@@ -324,7 +325,7 @@ class VoltageReader:
                 antenna_df=antenna_df,
             )
 
-        return dict(
+        return FullBandResult(
             voltages=voltages_stitched,
             header=first_header,
             freq_mhz=freq_mhz,

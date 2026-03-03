@@ -19,6 +19,7 @@ import numpy as np
 from . import baselines
 from .formats import VisibilityFormat
 from .._progress import print_progress
+from .._results import VisibilityResult
 from .._time import format_time_span
 
 
@@ -181,7 +182,7 @@ class VisibilityReader:
         if nfiles is not None and time_end is not None:
             raise ValueError("nfiles and time_end are mutually exclusive")
         if skip_nfiles and nfiles is None:
-            raise ValueError("skip_nfiles requires nfiles")
+            raise ValueError("skip_nfiles requires nfiles (use time_start/time_end for time-based slicing)")
 
         tz_obj = ZoneInfo(time_tz) if time_tz != "UTC" else timezone.utc
 
@@ -439,7 +440,7 @@ class VisibilityReader:
             metadata["targets"] = targets
             metadata["baseline_convention"] = "V(ref,target) with conjugation when ref>target"
 
-        return dict(
+        return VisibilityResult(
             vis=vis,
             freq_mhz=freq_mhz,
             time_unix=time_unix,

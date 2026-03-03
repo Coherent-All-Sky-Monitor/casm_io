@@ -24,6 +24,7 @@ from casm_io.voltage.reader import VoltageReader
 from casm_io.filterbank.reader import FilterbankFile
 from casm_io.filterbank.writer import write_filterbank
 from casm_io.candidates.reader import CandidateReader
+from casm_io._results import VisibilityResult, SubbandResult, FullBandResult
 
 __all__ = [
     "load_format",
@@ -34,4 +35,7 @@ __all__ = [
     "FilterbankFile",
     "write_filterbank",
     "CandidateReader",
+    "VisibilityResult",
+    "SubbandResult",
+    "FullBandResult",
 ]
