@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 
 from .header import get_frequency_axis, get_time_axis
 
+_DB_FLOOR = 1e-10
+
 
 def _dm_delay_samples(dm: float, freq_mhz: np.ndarray, tsamp: float) -> np.ndarray:
     """
@@ -131,7 +133,7 @@ def _dedisperse(data: np.ndarray, dm: float, freq_mhz: np.ndarray, tsamp: float,
     if header is not None:
         try:
             return _dedisperse_sigpyproc(data, dm, header)
-        except (ImportError, Exception):
+        except ImportError:
             pass
     return _dedisperse_standalone(data, dm, freq_mhz, tsamp)
 
@@ -188,7 +190,7 @@ def plot_bandpass(
 
     fig, ax = plt.subplots(figsize=figsize)
     if scale.lower() == "db":
-        bandpass = 10 * np.log10(np.maximum(bandpass, 1e-10))
+        bandpass = 10 * np.log10(np.maximum(bandpass, _DB_FLOOR))
         ylabel = "Power (dB)"
     else:
         ylabel = "Mean Counts"
@@ -241,7 +243,7 @@ def plot_timeseries(
 
     fig, ax = plt.subplots(figsize=figsize)
     if scale.lower() == "db":
-        ts = 10 * np.log10(np.maximum(ts, 1e-10))
+        ts = 10 * np.log10(np.maximum(ts, _DB_FLOOR))
         ylabel = "Power (dB)"
     else:
         ylabel = "Mean Counts"
@@ -329,7 +331,7 @@ def plot_dynamic_spectrum(
 
     fig, ax = plt.subplots(figsize=figsize)
     if scale.lower() == "db":
-        data_ds = 10 * np.log10(np.maximum(data_ds, 1e-10))
+        data_ds = 10 * np.log10(np.maximum(data_ds, _DB_FLOOR))
         label = "Power (dB)"
     else:
         label = "Counts"

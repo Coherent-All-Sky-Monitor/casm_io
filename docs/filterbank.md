@@ -1,18 +1,29 @@
 # Filterbank Files
 
-## Reading and writing
+## Reading
 
 ```python
-from casm_io.filterbank import read_filterbank, write_filterbank
+from casm_io import FilterbankFile
 
-# Read
-result = read_filterbank("/path/to/beam.fil")
-print(result['data'].shape)        # (nsamples, nchans)
-print(result['backend_used'])      # "sigpyproc" or "standalone"
+fb = FilterbankFile("/path/to/beam.fil")
 
-# Write
-info = write_filterbank("output.fil", result['data'], result['header'], nbits=8)
-print(info['backend_used'])        # "sigpyproc" or "standalone"
+# Header is parsed on init — data is NOT loaded yet
+print(fb.nchans, fb.nsamples)
+print(fb.freq_mhz[:3])
+print(fb.time_s[-1])
+print(fb.backend_used)    # "sigpyproc" or "standalone"
+
+# Data loads on first access
+data = fb.data             # (nsamples, nchans)
+```
+
+## Writing
+
+```python
+from casm_io import write_filterbank
+
+info = write_filterbank("output.fil", data, fb.header, nbits=8)
+print(info['backend_used'])
 ```
 
 ## Quick-look plots
@@ -25,51 +36,19 @@ from casm_io.filterbank.plotting import (
     plot_dedispersed_waterfall,
 )
 
-plot_bandpass(result['data'], result['header'], scale='db', output_path="bandpass.png")
+fb = FilterbankFile("beam.fil")
 
-plot_timeseries(result['data'], result['header'], output_path="timeseries.png")
+plot_bandpass(fb.data, fb.header, scale='db', output_path="bandpass.png")
+plot_timeseries(fb.data, fb.header, output_path="timeseries.png")
 
-plot_dynamic_spectrum(
-    result['data'], result['header'],
-    dm=500.0,
-    time_range=(1.2, 1.8),
-    output_path="frb_candidate.png",
-)
+plot_dynamic_spectrum(fb.data, fb.header, dm=500.0, time_range=(1.2, 1.8),
+                      output_path="waterfall.png")
 
 # 2-panel FRB inspection: timeseries + waterfall
-plot_dedispersed_waterfall(
-    result['data'], result['header'],
-    dm=500.0,
-    output_path="frb_inspection.png",
-)
+plot_dedispersed_waterfall(fb.data, fb.header, dm=500.0,
+                           output_path="frb_inspection.png")
 ```
-
-## CLI script
-
-A CLI script for filterbank inspection is provided in `examples/inspect_filterbank.py`:
-
-```bash
-# Dedispersed 2-panel plot with time range
-python examples/inspect_filterbank.py \
-    --input beam.fil --dm 125.0 --time-range 15.5 17.5
-
-# Raw dynamic spectrum (no dedispersion)
-python examples/inspect_filterbank.py \
-    --input beam.fil --dm 125.0 --no-dedisperse
-
-# Custom output path and dB scale
-python examples/inspect_filterbank.py \
-    --input beam.fil --dm 125.0 --output frb.png --scale db
-```
-
-Options:
-- `--input` (required): path to `.fil` file
-- `--dm` (float, default 0.0): dispersion measure in pc/cm^3
-- `--time-range START END`: time window in seconds
-- `--no-dedisperse`: show raw dynamic spectrum even when `--dm` is set
-- `--output`: output PNG path (auto-generated from input filename if omitted)
-- `--scale`: `linear` (default) or `db`
 
 ## Backend traceability
 
-Both `read_filterbank` and `write_filterbank` return a `backend_used` field (`"sigpyproc"` or `"standalone"`). Use this to trace which code path ran if debugging issues.
+Both `FilterbankFile` and `write_filterbank` expose `backend_used` (`"sigpyproc"` or `"standalone"`). Check this when debugging read/write issues.

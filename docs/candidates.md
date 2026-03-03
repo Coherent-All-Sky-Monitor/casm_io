@@ -5,11 +5,13 @@ Read FRB search candidate lists produced by Hella.
 ## Usage
 
 ```python
-from casm_io.candidates import read_t1_candidates
+from casm_io import CandidateReader
 
-df = read_t1_candidates("/path/to/t1_candidates.txt")
-print(df.head())
-print(df.shape)
+cands = CandidateReader("/path/to/t1_candidates.txt")
+print(cands.n_candidates)   # 1234
+print(cands.snr_range)      # (6.5, 42.3)
+print(cands.dm_range)       # (10.0, 3000.0)
+print(cands.df.head())
 ```
 
 ## T1 columns
