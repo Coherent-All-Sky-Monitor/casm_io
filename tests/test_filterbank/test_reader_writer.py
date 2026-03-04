@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from casm_io.filterbank.reader import read_filterbank
+from casm_io.filterbank.reader import FilterbankFile
 from casm_io.filterbank.writer import write_filterbank
 from casm_io.filterbank.header import write_sigproc_header
 
@@ -17,10 +17,10 @@ class TestRoundTrip8bit:
         info = write_filterbank(fpath, data, header, nbits=8)
         assert info["backend_used"] in ("sigpyproc", "standalone")
 
-        result = read_filterbank(fpath)
-        assert result["backend_used"] in ("sigpyproc", "standalone")
-        assert result["data"].shape == data.shape
-        np.testing.assert_array_equal(result["data"].astype(np.uint8), data)
+        fb = FilterbankFile(fpath)
+        assert fb.backend_used in ("sigpyproc", "standalone")
+        assert fb.data.shape == data.shape
+        np.testing.assert_array_equal(fb.data.astype(np.uint8), data)
 
 
 class TestRoundTrip32bit:
@@ -33,9 +33,9 @@ class TestRoundTrip32bit:
         info = write_filterbank(fpath, data, header, nbits=32)
         assert info["backend_used"] in ("sigpyproc", "standalone")
 
-        result = read_filterbank(fpath)
+        fb = FilterbankFile(fpath)
         np.testing.assert_allclose(
-            result["data"].astype(np.float32), data, atol=1e-5
+            fb.data.astype(np.float32), data, atol=1e-5
         )
 
 
@@ -45,9 +45,8 @@ class TestBackendUsed:
         write_info = write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
         assert "backend_used" in write_info
 
-        read_info = read_filterbank(fpath)
-        assert "backend_used" in read_info
-        assert read_info["backend_used"] in ("sigpyproc", "standalone")
+        fb = FilterbankFile(fpath)
+        assert fb.backend_used in ("sigpyproc", "standalone")
 
 
 class TestDefaultTelescopeId:
@@ -66,8 +65,8 @@ class TestDefaultTelescopeId:
         fpath = str(tmp_path / "test_default.fil")
 
         write_filterbank(fpath, data, header, nbits=8)
-        result = read_filterbank(fpath)
-        assert result["header"].get("telescope_id") == 20
+        fb = FilterbankFile(fpath)
+        assert fb.header.get("telescope_id") == 20
 
 
 class TestFreqTimeAxes:
@@ -75,11 +74,37 @@ class TestFreqTimeAxes:
         fpath = str(tmp_path / "test_axes.fil")
         write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
 
-        result = read_filterbank(fpath)
-        freq = result["freq_mhz"]
-        time = result["time_s"]
+        fb = FilterbankFile(fpath)
+        freq = fb.freq_mhz
+        time = fb.time_s
 
         assert freq.shape == (64,)
         assert abs(freq[0] - 468.75) < 1e-4
         assert time.shape == (100,)
         assert abs(time[0]) < 1e-10
+
+
+class TestLazyLoading:
+    def test_data_not_loaded_on_init(self, tmp_path, synthetic_filterbank_header, synthetic_filterbank_data):
+        fpath = str(tmp_path / "test_lazy.fil")
+        write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
+
+        fb = FilterbankFile(fpath)
+        assert fb._data is None  # data not loaded yet
+        assert fb.nchans == 64
+        assert fb.nsamples == 100
+        # Now access data
+        _ = fb.data
+        assert fb._data is not None
+
+    def test_properties_without_data_load(self, tmp_path, synthetic_filterbank_header, synthetic_filterbank_data):
+        fpath = str(tmp_path / "test_props.fil")
+        write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
+
+        fb = FilterbankFile(fpath)
+        # These should work without loading data
+        assert fb.nchans == 64
+        assert fb.nsamples == 100
+        assert fb.freq_mhz.shape == (64,)
+        assert fb.time_s.shape == (100,)
+        assert fb._data is None  # still not loaded

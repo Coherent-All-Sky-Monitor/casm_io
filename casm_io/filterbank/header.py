@@ -6,6 +6,7 @@ Supports reading and writing the binary SIGPROC header format.
 """
 
 import struct
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,17 @@ HEADER_KEYWORDS = {
 def _read_string(f) -> str:
     """Read a length-prefixed string from filterbank file."""
     strlen = struct.unpack("i", f.read(4))[0]
-    return f.read(strlen).decode("utf-8")
+    if strlen < 0 or strlen > 65536:
+        raise ValueError(
+            f"Invalid SIGPROC header string length: {strlen} "
+            f"(must be 0-65536). File may be corrupted."
+        )
+    raw = f.read(strlen)
+    if len(raw) != strlen:
+        raise ValueError(
+            f"Truncated SIGPROC header: expected {strlen} bytes, got {len(raw)}"
+        )
+    return raw.decode("utf-8")
 
 
 def _write_string(f, s: str):
@@ -77,6 +88,10 @@ def read_sigproc_header(filepath: str) -> tuple[dict, int]:
                 elif dtype == "b":
                     header[keyword] = struct.unpack("b", f.read(1))[0]
             else:
+                warnings.warn(
+                    f"Unknown SIGPROC keyword '{keyword}' — stopping header parse",
+                    stacklevel=2,
+                )
                 break
 
         header_size = f.tell()
@@ -118,6 +133,10 @@ def get_frequency_axis(header: dict) -> np.ndarray:
     nchans = header.get("nchans", 1)
     fch1 = header.get("fch1", 0.0)
     foff = header.get("foff", 1.0)
+    if "nchans" not in header:
+        warnings.warn("nchans missing from header, defaulting to 1", stacklevel=2)
+    if "foff" not in header:
+        warnings.warn("foff missing from header, defaulting to 1.0", stacklevel=2)
     return fch1 + np.arange(nchans) * foff
 
 

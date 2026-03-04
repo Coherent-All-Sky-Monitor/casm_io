@@ -1,5 +1,7 @@
 """Tests for SIGPROC filterbank header parsing and writing."""
 
+import struct
+
 import numpy as np
 import pytest
 
@@ -58,3 +60,42 @@ class TestTimeAxis:
         assert time.shape == (100,)
         assert abs(time[0]) < 1e-10
         assert abs(time[-1] - 0.099) < 1e-6
+
+
+class TestStringBoundsCheck:
+    """Security: _read_string must reject malicious/corrupt string lengths."""
+
+    def _write_fake_header_with_strlen(self, fpath, strlen_value):
+        """Write a fake .fil file whose first string length is strlen_value."""
+        with open(fpath, "wb") as f:
+            # HEADER_START keyword (normal)
+            keyword = b"HEADER_START"
+            f.write(struct.pack("i", len(keyword)))
+            f.write(keyword)
+            # Next keyword with crafted string length
+            f.write(struct.pack("i", strlen_value))
+
+    def test_huge_strlen_rejected(self, tmp_path):
+        fpath = str(tmp_path / "huge.fil")
+        self._write_fake_header_with_strlen(fpath, 100_000)
+        with pytest.raises(ValueError, match="Invalid SIGPROC header string length"):
+            read_sigproc_header(fpath)
+
+    def test_negative_strlen_rejected(self, tmp_path):
+        fpath = str(tmp_path / "neg.fil")
+        self._write_fake_header_with_strlen(fpath, -1)
+        with pytest.raises(ValueError, match="Invalid SIGPROC header string length"):
+            read_sigproc_header(fpath)
+
+    def test_truncated_header_string(self, tmp_path):
+        """String length says 100 bytes but file ends after 10."""
+        fpath = str(tmp_path / "trunc.fil")
+        with open(fpath, "wb") as f:
+            keyword = b"HEADER_START"
+            f.write(struct.pack("i", len(keyword)))
+            f.write(keyword)
+            # Claim next string is 100 bytes but only write 10
+            f.write(struct.pack("i", 100))
+            f.write(b"x" * 10)
+        with pytest.raises(ValueError, match="Truncated SIGPROC header"):
+            read_sigproc_header(fpath)

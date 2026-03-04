@@ -5,8 +5,8 @@ Each format is a JSON file describing the binary file layout:
 nsig, integration time, channels, frequency setup, etc.
 
 Built-in formats:
-    "pre_jan27_2026"  — 64 inputs, 34.36s integrations
-    "post_jan27_2026" — 128 inputs, 137.44s integrations
+    "layout_32ant"  — 64 inputs (32 ant x 2 pol), 34.36s integrations
+    "layout_64ant"  — 128 inputs (64 ant x 2 pol), 137.44s integrations
 
 Custom formats: pass a JSON file path to load_format().
 """
@@ -22,8 +22,8 @@ _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 # Map short names to JSON files
 _BUILTIN_FORMATS = {
-    "pre_jan27_2026": os.path.join(_CONFIGS_DIR, "pre_jan27_2026.json"),
-    "post_jan27_2026": os.path.join(_CONFIGS_DIR, "post_jan27_2026.json"),
+    "layout_32ant": os.path.join(_CONFIGS_DIR, "layout_32ant.json"),
+    "layout_64ant": os.path.join(_CONFIGS_DIR, "layout_64ant.json"),
 }
 
 
@@ -82,7 +82,7 @@ def load_format(name_or_path: str) -> VisibilityFormat:
     Parameters
     ----------
     name_or_path : str
-        Built-in name ("pre_jan27_2026", "post_jan27_2026") or path to a JSON file.
+        Built-in name ("layout_32ant", "layout_64ant") or path to a JSON file.
 
     Returns
     -------

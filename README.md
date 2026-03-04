@@ -1,11 +1,11 @@
 # casm_io
 
-Unified reader and writer for all CASM (Coherent All-Sky Monitor) data products at OVRO.
+Unified I/O library for CASM (Coherent All-Sky Monitor) data products at OVRO.
 
-- **Correlator visibilities** — binary `.dat` files (pre/post Jan 27 2026 formats)
-- **Voltage DADA dumps** — 4+4 bit complex `.dada` files (3-subband, 4096-byte headers)
+- **Correlator visibilities** — binary `.dat` files
+- **Voltage DADA dumps** — 4+4 bit complex `.dada` files (3-subband)
 - **Filterbank files** — SIGPROC `.fil` format (read/write + quick-look plots)
-- **Candidates** — FRB search candidate lists (Hella T1/T2/T3)
+- **Candidates** — FRB search candidate lists (Hella T1)
 
 ## Install
 
@@ -15,68 +15,76 @@ cd /home/casm/software/dev/casm_io
 pip install -e .
 ```
 
-Verify:
-```bash
-python -c "import casm_io; print(casm_io.__version__)"
-```
-
 ## Quick Start
 
 ### Correlator visibilities
 
 ```python
-from casm_io.correlator import read_visibilities, load_format
+from casm_io import VisibilityReader, load_format
 
-fmt = load_format("post_jan27_2026")
-data = read_visibilities("/data/casm/visibilities_64ant", "2026-01-27-20:38:33", fmt)
-print(data['vis'].shape)       # (T, 3072, 8256) complex64
-print(data['freq_mhz'][:3])   # [375.000, 375.031, 375.061]
+fmt = load_format("layout_64ant")
+reader = VisibilityReader("/data/casm/visibilities_64ant", "2026-01-27-20:38:33", fmt)
+
+# Check time span
+print(reader.time_span_str())                        # UTC
+print(reader.time_span_str("America/Los_Angeles"))   # Pacific
+
+# Read first 5 files
+result = reader.read(nfiles=5)
+print(result.vis.shape)          # (T, 3072, 8256) complex64
+print(result.freq_mhz)      # [468.750, ... 375.02]
+
+# Skip files
+result = reader.read(nfiles=5, skip_nfiles=10)
+
+# Both access styles work
+result.vis                       # attribute access (new)
+result['vis']                    # dict-style access 
 ```
 
 ### Voltage DADA files
 
 ```python
-from casm_io.voltage import read_voltage_dump
+from casm_io import VoltageReader
 
-result = read_voltage_dump(
-    "/mnt/nvme3/data/casm/voltage_dumps",
-    "2026-02-17-21:10:43",
-    antenna_csv="/path/to/antenna_layout_current.csv",
-)
-print(result['voltages'].shape)      # (ntime, 3072, 16) complex64
-print(result['freq_mhz'][[0, -1]])   # [468.719, 375.000]
+reader = VoltageReader("/mnt/nvme3/data/casm/voltage_dumps", "2026-02-17-21:10:43")
+result = reader.read_full_band(antenna_csv="/path/to/antenna_layout.csv")
+print(result.voltages.shape)     # (ntime, 3072, 16) complex64
+print(result.utc_start)          # '2026-02-17-21:10:43'
 ```
 
 ### Filterbank files
 
 ```python
-from casm_io.filterbank import read_filterbank
+from casm_io import FilterbankFile
 
-result = read_filterbank("/path/to/beam.fil")
-print(result['data'].shape)        # (nsamples, nchans)
-print(result['backend_used'])      # "sigpyproc" or "standalone"
+fb = FilterbankFile("/path/to/beam.fil")   # prints backend and shape
+print(fb.nchans, fb.nsamples)              # header info, no data loaded yet
+print(fb.data.shape)                       # (nsamples, nchans) — loaded on access
+print(fb.backend_used)                     # "sigpyproc" or "standalone"
+
+fb = FilterbankFile("/path/to/beam.fil", verbose=False)  # silence output
 ```
 
 ### Candidates
 
 ```python
-from casm_io.candidates import read_t1_candidates
+from casm_io import CandidateReader
 
-df = read_t1_candidates("/path/to/t1_candidates.txt")
-print(df.shape)
+cands = CandidateReader("/path/to/t1_candidates.txt")
+print(cands.n_candidates, cands.snr_range, cands.dm_range)
+print(cands.df.head())
 ```
 
 ## Documentation
 
-- [Correlator visibilities](docs/correlator.md) — format configs, antenna mapping, baseline extraction, frequency order
-- [Voltage DADA files](docs/voltage.md) — single-subband reading, header trust, frequency order
-- [Filterbank files](docs/filterbank.md) — plotting functions, CLI script, backend traceability
-- [Candidates](docs/candidates.md) — T1 column table, usage
+- [Correlator visibilities](docs/correlator.md)
+- [Voltage DADA files](docs/voltage.md)
+- [Filterbank files](docs/filterbank.md)
+- [Candidates](docs/candidates.md)
 
 ## Testing
 
 ```bash
 python -m pytest tests/ -v
-find casm_io -name '*.py' -exec python -m py_compile {} \;
-python -c "import casm_io; print(casm_io.__version__)"
 ```

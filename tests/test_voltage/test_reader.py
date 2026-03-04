@@ -3,14 +3,21 @@
 import numpy as np
 import pytest
 
-from casm_io.voltage.reader import read_dada_file, _guess_subband_index
+from casm_io.voltage.reader import VoltageReader, _guess_subband_index
 from casm_io.voltage.unpack import unpack_4bit
 
 
-class TestReadDadaFile:
+class TestVoltageReaderSubband:
     def test_read_shapes(self, synthetic_dada_file):
         fpath, _, raw, cfg = synthetic_dada_file
-        result = read_dada_file(fpath, n_time=cfg["n_time"], verbose=False)
+        # synthetic_dada_file is in a chan0_1023/ subdirectory
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        assert 0 in reader.subbands_found
+
+        result = reader.read_subband(0, n_time=cfg["n_time"], verbose=False)
 
         # Default active_snaps from config is [0, 2, 4]
         for snap_id in [0, 2, 4]:
@@ -20,8 +27,12 @@ class TestReadDadaFile:
 
     def test_read_values_match_unpack(self, synthetic_dada_file):
         fpath, _, raw, cfg = synthetic_dada_file
-        result = read_dada_file(
-            fpath, n_time=cfg["n_time"], snaps=[0], freq_order="descending",
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_subband(
+            0, n_time=cfg["n_time"], snaps=[0], freq_order="descending",
             verbose=False,
         )
         v = result["voltages"][0]
@@ -32,12 +43,16 @@ class TestReadDadaFile:
 
     def test_ascending_reverses_channels(self, synthetic_dada_file):
         fpath, _, raw, cfg = synthetic_dada_file
-        desc = read_dada_file(
-            fpath, n_time=cfg["n_time"], snaps=[0], freq_order="descending",
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        desc = reader.read_subband(
+            0, n_time=cfg["n_time"], snaps=[0], freq_order="descending",
             verbose=False,
         )
-        asc = read_dada_file(
-            fpath, n_time=cfg["n_time"], snaps=[0], freq_order="ascending",
+        asc = reader.read_subband(
+            0, n_time=cfg["n_time"], snaps=[0], freq_order="ascending",
             verbose=False,
         )
         # Ascending should reverse the channel axis
@@ -47,8 +62,31 @@ class TestReadDadaFile:
 
     def test_freq_axis_shape(self, synthetic_dada_file):
         fpath = synthetic_dada_file[0]
-        result = read_dada_file(fpath, n_time=2, verbose=False)
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_subband(0, n_time=2, verbose=False)
         assert result["freq_mhz"].shape == (1024,)
+
+    def test_missing_subband_raises(self, synthetic_dada_file):
+        fpath = synthetic_dada_file[0]
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(FileNotFoundError, match="Subband 1 not found"):
+            reader.read_subband(1, verbose=False)
+
+
+class TestVoltageReaderProperties:
+    def test_subbands_found(self, synthetic_dada_file):
+        fpath = synthetic_dada_file[0]
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        timestamp = "2026-02-17-21:10:43"
+
+        reader = VoltageReader(data_dir, timestamp)
+        assert reader.subbands_found == [0]
 
 
 class TestGuessSubbandIndex:

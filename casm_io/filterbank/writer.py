@@ -5,6 +5,8 @@ Uses sigpyproc as primary backend. Falls back to standalone writer.
 Every return dict includes 'backend_used' for traceability.
 """
 
+import warnings
+
 import numpy as np
 
 from .header import write_sigproc_header
@@ -89,5 +91,14 @@ def write_filterbank(
     """
     try:
         return _write_sigpyproc(filepath, data, header, nbits)
-    except (ImportError, Exception):
-        return _write_standalone(filepath, data, header, nbits)
+    except ImportError:
+        warnings.warn(
+            "sigpyproc not available, falling back to standalone filterbank writer",
+            stacklevel=2,
+        )
+    except (TypeError, AttributeError) as e:
+        warnings.warn(
+            f"sigpyproc write failed ({e}), falling back to standalone writer",
+            stacklevel=2,
+        )
+    return _write_standalone(filepath, data, header, nbits)

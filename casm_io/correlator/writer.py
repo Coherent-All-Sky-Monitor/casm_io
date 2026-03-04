@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from .._results import VisibilityResult
 from .formats import VisibilityFormat
 
 
@@ -104,22 +105,13 @@ def read_npz(path: str) -> dict:
     else:
         raise ValueError("NPZ missing 'vis' or 'vis_ref' key")
 
-    result = dict(
-        vis=vis.astype(np.complex64),
-        freq_mhz=D["freq_mhz"].astype(np.float64),
-        time_unix=(
-            D["time_utc_unix"].astype(np.float64)
-            if "time_utc_unix" in D
-            else D["time_unix"].astype(np.float64)
-        ),
-        ref=int(D["ref_input"]) if "ref_input" in D else (
-            int(D["ref_adc"]) if "ref_adc" in D else None
-        ),
-        targets=(
-            D["target_inputs"].astype(np.int64)
-            if "target_inputs" in D
-            else (D["target_adcs"].astype(np.int64) if "target_adcs" in D else None)
-        ),
+    ref = int(D["ref_input"]) if "ref_input" in D else (
+        int(D["ref_adc"]) if "ref_adc" in D else None
+    )
+    targets = (
+        D["target_inputs"].astype(np.int64)
+        if "target_inputs" in D
+        else (D["target_adcs"].astype(np.int64) if "target_adcs" in D else None)
     )
 
     skip_keys = {
@@ -135,5 +127,15 @@ def read_npz(path: str) -> dict:
             except Exception:
                 metadata[key] = D[key]
 
-    result["metadata"] = metadata
-    return result
+    return VisibilityResult(
+        vis=vis.astype(np.complex64),
+        freq_mhz=D["freq_mhz"].astype(np.float64),
+        time_unix=(
+            D["time_utc_unix"].astype(np.float64)
+            if "time_utc_unix" in D
+            else D["time_unix"].astype(np.float64)
+        ),
+        metadata=metadata,
+        ref=ref,
+        targets=targets,
+    )
