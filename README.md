@@ -32,14 +32,14 @@ print(reader.time_span_str("America/Los_Angeles"))   # Pacific
 # Read first 5 files
 result = reader.read(nfiles=5)
 print(result.vis.shape)          # (T, 3072, 8256) complex64
-print(result.freq_mhz[:3])      # [468.750, 468.719, 468.689]
+print(result.freq_mhz)      # [468.750, ... 375.02]
 
 # Skip files
 result = reader.read(nfiles=5, skip_nfiles=10)
 
 # Both access styles work
 result.vis                       # attribute access (new)
-result['vis']                    # dict-style access (backwards compatible)
+result['vis']                    # dict-style access 
 ```
 
 ### Voltage DADA files
