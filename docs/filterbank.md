@@ -6,6 +6,7 @@
 from casm_io import FilterbankFile
 
 fb = FilterbankFile("/path/to/beam.fil")
+# Prints: Opened beam.fil (sigpyproc): 3072 chans, 50000 samples
 
 # Header is parsed on init — data is NOT loaded yet
 print(fb.nchans, fb.nsamples)
@@ -13,8 +14,16 @@ print(fb.freq_mhz[:3])
 print(fb.time_s[-1])
 print(fb.backend_used)    # "sigpyproc" or "standalone"
 
-# Data loads on first access
+# Data loads lazily on first access
 data = fb.data             # (nsamples, nchans)
+# Prints: Loading filterbank data...
+#         Loaded: (50000, 3072) float32
+```
+
+Silence output with `verbose=False`:
+
+```python
+fb = FilterbankFile("/path/to/beam.fil", verbose=False)
 ```
 
 ## Writing
