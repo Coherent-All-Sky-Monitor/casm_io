@@ -81,6 +81,53 @@ def antenna_csv_standard(tmp_path):
     return str(path)
 
 
+@pytest.fixture
+def synthetic_dat_with_header(tmp_path, tiny_format):
+    """Write a synthetic .dat file with 4096-byte ASCII header + binary data.
+
+    Returns (filepath, header_dict, expected_data, tiny_format).
+    """
+    fmt = tiny_format
+    nbl = fmt.n_baselines  # 10
+    ntime = fmt.ntime_per_file  # 2
+
+    # Build header matching tiny_format
+    tsamp_us = fmt.dt_raw_s * 1e6  # 1.0s -> 1e6 microseconds
+    header_lines = [
+        "HDR_SIZE 4096",
+        f"NCHAN {fmt.nchan}",
+        f"NBASELINE {nbl}",
+        f"CORR_DUMP_DUMPS_PER_FILE {ntime}",
+        f"TSAMP {tsamp_us}",
+        f"FREQ_START {fmt.freq_top_mhz}",
+        f"CHANBW -{fmt.chan_bw_mhz}",
+        "UTC_START 2026-03-05-08:02:39",
+    ]
+    header_text = "\n".join(header_lines) + "\n"
+    header_bytes = header_text.encode("ascii")
+    header_padded = header_bytes.ljust(4096, b"\x00")
+
+    # Create known data (same pattern as tiny_dat_file)
+    data = np.zeros((ntime, fmt.nchan, nbl, 2), dtype=np.int32)
+    for t in range(ntime):
+        for f in range(fmt.nchan):
+            for bl in range(nbl):
+                data[t, f, bl, 0] = t * 100 + f * 10 + bl
+                data[t, f, bl, 1] = t * 100 + f * 10 + bl + 1
+
+    fpath = tmp_path / "2026-03-05-08:02:39.0"
+    with open(fpath, "wb") as fobj:
+        fobj.write(header_padded)
+        data.tofile(fobj)
+
+    header_dict = {}
+    for line in header_lines:
+        parts = line.split(None, 1)
+        header_dict[parts[0]] = parts[1]
+
+    return str(fpath), header_dict, data, fmt
+
+
 # ---------------------------------------------------------------------------
 # Voltage fixtures
 # ---------------------------------------------------------------------------

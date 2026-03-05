@@ -7,6 +7,7 @@ Two formats supported:
 """
 
 from .formats import load_format, VisibilityFormat
+from .header import has_header, parse_corr_header, get_header_offset, format_from_header
 from .reader import VisibilityReader, discover_files
 from .writer import write_npz, read_npz
 from . import baselines
@@ -15,6 +16,10 @@ from .mapping import AntennaMapping
 __all__ = [
     "load_format",
     "VisibilityFormat",
+    "has_header",
+    "parse_corr_header",
+    "get_header_offset",
+    "format_from_header",
     "VisibilityReader",
     "discover_files",
     "write_npz",

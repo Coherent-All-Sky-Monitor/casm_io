@@ -18,6 +18,7 @@ import numpy as np
 
 from . import baselines
 from .formats import VisibilityFormat
+from .header import get_header_offset, format_from_header
 from .._progress import print_progress
 from .._results import VisibilityResult
 from .._time import format_time_span
@@ -65,18 +66,34 @@ class VisibilityReader:
         Directory containing visibility .dat files.
     base_str : str
         Observation identifier (UTC timestamp).
-    fmt : VisibilityFormat
-        Format configuration (from load_format).
+    fmt : VisibilityFormat, optional
+        Format configuration (from load_format). If None, auto-detected
+        from file header (new files with 4096-byte header). Required for
+        old files without headers.
     """
 
-    def __init__(self, data_dir: str, base_str: str, fmt: VisibilityFormat):
+    def __init__(self, data_dir: str, base_str: str, fmt: VisibilityFormat | None = None):
         self._data_dir = data_dir
         self._base_str = base_str
-        self._fmt = fmt
+        self._fmt_explicit = fmt is not None
 
         self._idx_to_path = discover_files(data_dir, base_str)
         if not self._idx_to_path:
             raise RuntimeError(f"No files found for {base_str} in {data_dir}")
+
+        # Auto-detect format from header if fmt not provided
+        if fmt is None:
+            first_path = self._idx_to_path[min(self._idx_to_path)]
+            offset, header = get_header_offset(first_path)
+            if header is not None:
+                fmt = format_from_header(header)
+            else:
+                raise ValueError(
+                    "No header found in data files and no fmt provided. "
+                    "Pass a VisibilityFormat via load_format() for old files."
+                )
+
+        self._fmt = fmt
 
         self._available_idxs = sorted(self._idx_to_path.keys())
         self._max_idx = self._available_idxs[-1]
@@ -251,25 +268,31 @@ class VisibilityReader:
             needed_file_idxs = list(range(start_file_idx, start_file_idx + nfiles))
             utc_end_unix = t0_unix + (start_file_idx + nfiles) * file_dur_s
         else:
-            if utc_start_unix < data_start_unix or utc_end_unix > data_end_unix:
-                raise ValueError(
-                    f"Requested time range outside available data.\n"
-                    f"Requested: {utc_start_unix} -> {utc_end_unix}\n"
-                    f"Available: {data_start_unix} -> {data_end_unix}"
-                )
+            if utc_start_dt is None and utc_end_dt is None:
+                # No time slicing — just use all available files
+                needed_file_idxs = self._available_idxs
+            else:
+                if utc_start_unix < data_start_unix or utc_end_unix > data_end_unix:
+                    raise ValueError(
+                        f"Requested time range outside available data.\n"
+                        f"Requested: {utc_start_unix} -> {utc_end_unix}\n"
+                        f"Available: {data_start_unix} -> {data_end_unix}"
+                    )
 
-            # Convert to integration indices
-            delta_start = utc_start_unix - t0_unix
-            delta_end = utc_end_unix - t0_unix
+                # Convert to integration indices
+                # Subtract small epsilon before ceil to prevent float noise
+                # (e.g., 352.0000000003 → 352 instead of 353)
+                delta_start = utc_start_unix - t0_unix
+                delta_end = utc_end_unix - t0_unix
 
-            k_start = int(np.ceil(delta_start / fmt.dt_raw_s))
-            k_stop = int(np.ceil(delta_end / fmt.dt_raw_s))
-            if k_stop <= k_start:
-                raise ValueError("Requested window contains zero integrations")
+                k_start = int(np.ceil(delta_start / fmt.dt_raw_s - 1e-6))
+                k_stop = int(np.ceil(delta_end / fmt.dt_raw_s - 1e-6))
+                if k_stop <= k_start:
+                    raise ValueError("Requested window contains zero integrations")
 
-            file_start_idx = k_start // fmt.ntime_per_file
-            file_stop_idx_excl = (k_stop - 1) // fmt.ntime_per_file + 1
-            needed_file_idxs = list(range(file_start_idx, file_stop_idx_excl))
+                file_start_idx = k_start // fmt.ntime_per_file
+                file_stop_idx_excl = (k_stop - 1) // fmt.ntime_per_file + 1
+                needed_file_idxs = list(range(file_start_idx, file_stop_idx_excl))
 
         # Check for missing files — warn + zero-fill
         missing = [i for i in needed_file_idxs if i not in self._idx_to_path]
@@ -293,8 +316,8 @@ class VisibilityReader:
                 # Compute integration indices for verbose output
                 delta_start = utc_start_unix - t0_unix
                 delta_end = utc_end_unix - t0_unix
-                k_start_v = int(np.ceil(delta_start / fmt.dt_raw_s))
-                k_stop_v = int(np.ceil(delta_end / fmt.dt_raw_s))
+                k_start_v = int(np.ceil(delta_start / fmt.dt_raw_s - 1e-6))
+                k_stop_v = int(np.ceil(delta_end / fmt.dt_raw_s - 1e-6))
                 print(f"Reading integrations {k_start_v}-{k_stop_v} from files "
                       f"{needed_file_idxs[0]}-{needed_file_idxs[-1]}")
 
@@ -319,8 +342,8 @@ class VisibilityReader:
         if nfiles is None:
             delta_start = utc_start_unix - t0_unix
             delta_end = utc_end_unix - t0_unix
-            k_start = int(np.ceil(delta_start / fmt.dt_raw_s))
-            k_stop = int(np.ceil(delta_end / fmt.dt_raw_s))
+            k_start = int(np.ceil(delta_start / fmt.dt_raw_s - 1e-6))
+            k_stop = int(np.ceil(delta_end / fmt.dt_raw_s - 1e-6))
         else:
             # For nfiles mode, read all integrations from requested files
             k_start = needed_file_idxs[0] * fmt.ntime_per_file
@@ -330,6 +353,7 @@ class VisibilityReader:
         vis_chunks = []
         time_chunks = []
         kept_files = []
+        file_headers = {}
 
         denom = fmt.nchan * nbaseline * 2  # int32 count per integration
 
@@ -361,7 +385,25 @@ class VisibilityReader:
 
             fpath = self._idx_to_path[file_idx]
 
-            raw = np.fromfile(fpath, dtype=np.int32)
+            offset, file_header = get_header_offset(fpath)
+            if file_header is not None:
+                file_headers[file_idx] = file_header
+                # Cross-validate header vs format when fmt was explicitly passed
+                if self._fmt_explicit:
+                    h_nchan = int(file_header.get("NCHAN", 0))
+                    h_nbl = int(file_header.get("NBASELINE", 0))
+                    if h_nchan and h_nchan != fmt.nchan:
+                        warnings.warn(
+                            f"File .{file_idx} header NCHAN={h_nchan} != fmt.nchan={fmt.nchan}",
+                            stacklevel=2,
+                        )
+                    if h_nbl and h_nbl != fmt.n_baselines:
+                        warnings.warn(
+                            f"File .{file_idx} header NBASELINE={h_nbl} != fmt.n_baselines={fmt.n_baselines}",
+                            stacklevel=2,
+                        )
+
+            raw = np.fromfile(fpath, dtype=np.int32, offset=offset)
             if raw.size % denom != 0:
                 raise ValueError(
                     f"File {fpath} has {raw.size} int32s, not divisible by {denom}"
@@ -433,6 +475,7 @@ class VisibilityReader:
             files=kept_files,
             freq_order=freq_order,
             missing_files=missing,
+            file_headers=file_headers,
         )
 
         if extract_specific:

@@ -14,7 +14,7 @@ Optional CSV columns (used if present):
     grid_code    — CAsMan grid position (e.g. CN021E01)
     kernel_index — CAsMan 0-255 correlator position
     pol          — Polarization (A or B)
-    x_m, y_m, z_m — ENU coordinates in meters
+    x_m, y_m, z_m — ENU coordinates in meters (aliases: x, y, z)
     functional   — 1=active, 0=inactive
 """
 
@@ -76,6 +76,12 @@ class AntennaMapping:
             rename["snap"] = "snap_id"
         if "packet_idx" in df.columns and "packet_index" not in df.columns:
             rename["packet_idx"] = "packet_index"
+        if "x" in df.columns and "x_m" not in df.columns:
+            rename["x"] = "x_m"
+        if "y" in df.columns and "y_m" not in df.columns:
+            rename["y"] = "y_m"
+        if "z" in df.columns and "z_m" not in df.columns:
+            rename["z"] = "z_m"
         if rename:
             df = df.rename(columns=rename)
         return cls(df)

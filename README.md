@@ -22,6 +22,12 @@ pip install -e .
 ```python
 from casm_io import VisibilityReader, load_format
 
+# New files (since March 4 2026) have a 4096-byte header — fmt auto-detected
+reader = VisibilityReader("/data/casm/visibilities_64ant", "2026-03-05-08:02:39")
+result = reader.read(nfiles=5)
+print(result.vis.shape)          # (T, 3072, 8256) complex64
+
+# Old files (before March 4 2026) — pass fmt explicitly
 fmt = load_format("layout_64ant")
 reader = VisibilityReader("/data/casm/visibilities_64ant", "2026-01-27-20:38:33", fmt)
 
@@ -39,7 +45,7 @@ result = reader.read(nfiles=5, skip_nfiles=10)
 
 # Both access styles work
 result.vis                       # attribute access (new)
-result['vis']                    # dict-style access 
+result['vis']                    # dict-style access
 ```
 
 ### Voltage DADA files
