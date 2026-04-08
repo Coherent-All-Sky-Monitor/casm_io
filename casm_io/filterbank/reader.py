@@ -26,6 +26,11 @@ class FilterbankFile:
     ----------
     filepath : str
         Path to .fil file.
+    beam : int | None
+        Beam index to load from a multibeam file. For single-beam files
+        this is ignored. For multibeam files, defaults to 0 if not specified.
+    verbose : bool
+        Print info messages during loading.
 
     Attributes
     ----------
@@ -33,9 +38,11 @@ class FilterbankFile:
         Filterbank header parameters.
     backend_used : str
         'sigpyproc' or 'standalone'.
+    nbeams : int
+        Number of beams in the file.
     """
 
-    def __init__(self, filepath: str, verbose: bool = True):
+    def __init__(self, filepath: str, beam: int | None = None, verbose: bool = True):
         self._filepath = str(filepath)
         self._data = None
         self._verbose = verbose
@@ -45,8 +52,21 @@ class FilterbankFile:
             from sigpyproc.readers import FilReader
             self._fil = FilReader(self._filepath)
             self._header = self._fil.header.to_dict()
-            self._header["_nsamples"] = self._fil.header.nsamples
             self._backend = "sigpyproc"
+
+            # Compute header size and true nsamples from file size.
+            # sigpyproc caps nsamples at min(header, file-derived) which
+            # is wrong for multibeam files — compute from scratch.
+            _, header_size = read_sigproc_header(self._filepath)
+            nbeams = max(self._header.get("nbeams", 1), 1)
+            nchans = self._header.get("nchans", 1)
+            nbits = self._header.get("nbits", 8)
+            file_size = Path(self._filepath).stat().st_size
+            data_bytes = file_size - header_size
+            nsamples_total = data_bytes * 8 // (nchans * nbits)
+            self._header["_header_size"] = header_size
+            self._header["_nsamples"] = nsamples_total // nbeams
+
         except ImportError:
             warnings.warn(
                 "sigpyproc not available, using standalone filterbank reader",
@@ -57,18 +77,36 @@ class FilterbankFile:
             nchans = header.get("nchans", 1)
             nbits = header.get("nbits", 8)
             nifs = header.get("nifs", 1)
+            nbeams = max(header.get("nbeams", 1), 1)
             bytes_per_sample = nchans * nifs * nbits // 8
             file_size = Path(self._filepath).stat().st_size
             data_size = file_size - header_size
-            nsamples = data_size // bytes_per_sample
-            header["_nsamples"] = nsamples
+            nsamples_total = data_size // bytes_per_sample
+            nsamples_per_beam = nsamples_total // nbeams
+            header["_nsamples"] = nsamples_per_beam
             header["_header_size"] = header_size
             self._header = header
             self._backend = "standalone"
 
+        # Resolve beam index
+        nbeams = self.nbeams
+        if nbeams > 1:
+            if beam is None:
+                beam = 0
+                if self._verbose:
+                    print(f"Multibeam file ({nbeams} beams), defaulting to beam 0")
+            if beam < 0 or beam >= nbeams:
+                raise ValueError(
+                    f"beam={beam} out of range for file with {nbeams} beams "
+                    f"(valid: 0-{nbeams - 1})"
+                )
+        self._beam = beam
+
         if self._verbose:
+            beam_str = f", beam {self._beam}" if nbeams > 1 else ""
             print(f"Opened {filepath} ({self._backend}): "
-                  f"{self.nchans} chans, {self.nsamples} samples")
+                  f"{self.nchans} chans, {self.nsamples} samples"
+                  f"{beam_str}")
 
     @property
     def header(self) -> dict:
@@ -81,6 +119,10 @@ class FilterbankFile:
     @property
     def nchans(self) -> int:
         return self._header.get("nchans", 1)
+
+    @property
+    def nbeams(self) -> int:
+        return max(self._header.get("nbeams", 1), 1)
 
     @property
     def nsamples(self) -> int:
@@ -108,7 +150,9 @@ class FilterbankFile:
     def _load_data(self) -> np.ndarray:
         if self._verbose:
             print("Loading filterbank data...")
-        if self._backend == "sigpyproc":
+        if self.nbeams > 1:
+            data = self._load_multibeam()
+        elif self._backend == "sigpyproc":
             data = self._load_sigpyproc()
         else:
             data = self._load_standalone()
@@ -153,3 +197,40 @@ class FilterbankFile:
         else:
             data = data.reshape(nsamples, nchans)
         return data
+
+    def _load_multibeam(self) -> np.ndarray:
+        """Load a single beam from a multibeam filterbank file.
+
+        Uses raw numpy read regardless of backend to avoid sigpyproc's
+        nsamples capping behavior on multibeam files.
+        """
+        header = self._header
+        header_size = header["_header_size"]
+        nbeams = self.nbeams
+        nsamples = self.nsamples
+        nchans = self.nchans
+        nbits = header.get("nbits", 8)
+        beam = self._beam
+
+        dtype_map = {8: np.uint8, 16: np.uint16, 32: np.float32}
+        if nbits == 8 and header.get("signed", 0):
+            dtype = np.int8
+        else:
+            dtype = dtype_map.get(nbits)
+            if dtype is None:
+                raise ValueError(f"Unsupported nbits: {nbits}")
+
+        total_count = nsamples * nbeams * nchans
+
+        with open(self._filepath, "rb") as f:
+            f.seek(header_size)
+            raw = np.fromfile(f, dtype=dtype, count=total_count)
+
+        if raw.size != total_count:
+            raise ValueError(
+                f"Truncated multibeam filterbank data: expected {total_count} "
+                f"values, got {raw.size} in {self._filepath}"
+            )
+
+        data = raw.reshape(nbeams, nsamples, nchans)
+        return data[beam, :, :]
