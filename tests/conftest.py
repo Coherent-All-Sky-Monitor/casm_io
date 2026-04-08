@@ -214,3 +214,39 @@ def synthetic_filterbank_data():
     """Synthetic filterbank data (100 samples, 64 channels)."""
     rng = np.random.RandomState(123)
     return rng.randint(0, 256, size=(100, 64), dtype=np.uint8)
+
+
+@pytest.fixture
+def synthetic_multibeam_filterbank_header():
+    """A minimal SIGPROC header dict for a multibeam file."""
+    return {
+        "telescope_id": 20,
+        "machine_id": 0,
+        "data_type": 1,
+        "source_name": "TEST_MULTIBEAM",
+        "nchans": 64,
+        "nifs": 1,
+        "nbits": 8,
+        "nbeams": 4,
+        "ibeam": 0,
+        "tsamp": 0.001,
+        "tstart": 60000.0,
+        "fch1": 468.75,
+        "foff": -0.030517578125,
+    }
+
+
+@pytest.fixture
+def synthetic_multibeam_filterbank_data():
+    """Synthetic multibeam filterbank data (4 beams, 100 samples, 64 channels).
+
+    Each beam has a distinct pattern for verification:
+    beam N has values offset by N * 50.
+    """
+    rng = np.random.RandomState(789)
+    data = np.zeros((4, 100, 64), dtype=np.uint8)
+    for beam in range(4):
+        data[beam, :, :] = rng.randint(
+            beam * 50, beam * 50 + 50, size=(100, 64), dtype=np.uint8
+        )
+    return data

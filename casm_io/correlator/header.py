@@ -80,11 +80,31 @@ def format_from_header(header: dict[str, str]) -> VisibilityFormat:
     VisibilityFormat
     """
     nchan = int(header["NCHAN"])
-    n_baselines = int(header["NBASELINE"])
+    # NBASELINE in newer headers, NBEAM in early headers (same value)
+    if "NBASELINE" in header:
+        n_baselines = int(header["NBASELINE"])
+    elif "NBEAM" in header:
+        n_baselines = int(header["NBEAM"])
+    else:
+        raise KeyError("Header missing both NBASELINE and NBEAM")
     ntime_per_file = int(header["CORR_DUMP_DUMPS_PER_FILE"])
     dt_raw_s = float(header["TSAMP"]) / 1e6  # microseconds -> seconds
-    freq_top_mhz = float(header["FREQ_START"])
-    chan_bw_mhz = abs(float(header["CHANBW"]))
+    # FREQ_START in newer headers; fall back to FREQ + BW/2 for early headers
+    if "FREQ_START" in header:
+        freq_top_mhz = float(header["FREQ_START"])
+    elif "FREQ" in header and "BW" in header:
+        freq_top_mhz = float(header["FREQ"]) + abs(float(header["BW"])) / 2
+    else:
+        raise KeyError("Header missing FREQ_START (and no FREQ+BW fallback)")
+    # CHANBW in newer headers; derive from BW/NCHAN for early headers
+    if "CHANBW" in header:
+        chanbw_raw = float(header["CHANBW"])
+    elif "BW" in header:
+        chanbw_raw = float(header["BW"]) / nchan
+    else:
+        raise KeyError("Header missing both CHANBW and BW")
+    native_order = "descending" if chanbw_raw < 0 else "ascending"
+    chan_bw_mhz = abs(chanbw_raw)
 
     # Derive nsig from n_baselines: n_baselines = nsig*(nsig+1)/2
     # nsig = (-1 + sqrt(1 + 8*n_baselines)) / 2
@@ -105,5 +125,5 @@ def format_from_header(header: dict[str, str]) -> VisibilityFormat:
         chan_bw_mhz=chan_bw_mhz,
         freq_top_mhz=freq_top_mhz,
         freq_bottom_mhz=freq_bottom_mhz,
-        native_order="descending",
+        native_order=native_order,
     )

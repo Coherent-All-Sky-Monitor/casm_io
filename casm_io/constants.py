@@ -7,7 +7,9 @@ OVRO_LAT_DEG = 37.2339
 OVRO_LON_DEG = -118.2821
 OVRO_ELEV_M = 1222.0
 
-# Frequency band
+# Frequency band (legacy values for pre-March 2026 data)
+# For current frequencies, use VisibilityFormat from file headers.
+# The band was shifted on 2026-03-27: FREQ_TOP changed from 468.75 to 484.375 MHz.
 FREQ_TOP_MHZ = 468.75
 FREQ_BOTTOM_MHZ = 375.0
 N_CHAN_TOTAL = 3072

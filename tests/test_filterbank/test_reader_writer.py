@@ -108,3 +108,125 @@ class TestLazyLoading:
         assert fb.freq_mhz.shape == (64,)
         assert fb.time_s.shape == (100,)
         assert fb._data is None  # still not loaded
+
+
+class TestMultibeamRoundTrip:
+    def test_write_read_multibeam_beam0(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+        synthetic_multibeam_filterbank_data,
+    ):
+        header = synthetic_multibeam_filterbank_header
+        data = synthetic_multibeam_filterbank_data  # (4, 100, 64) uint8
+        fpath = str(tmp_path / "test_multibeam.fil")
+
+        write_filterbank(fpath, data, header, nbits=8)
+
+        fb = FilterbankFile(fpath, beam=0)
+        assert fb.nbeams == 4
+        assert fb.nsamples == 100
+        assert fb.data.shape == (100, 64)
+        np.testing.assert_array_equal(fb.data.astype(np.uint8), data[0, :, :])
+
+    def test_write_read_multibeam_each_beam(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+        synthetic_multibeam_filterbank_data,
+    ):
+        header = synthetic_multibeam_filterbank_header
+        data = synthetic_multibeam_filterbank_data
+        fpath = str(tmp_path / "test_multibeam.fil")
+
+        write_filterbank(fpath, data, header, nbits=8)
+
+        for beam_idx in range(4):
+            fb = FilterbankFile(fpath, beam=beam_idx, verbose=False)
+            np.testing.assert_array_equal(
+                fb.data.astype(np.uint8), data[beam_idx, :, :]
+            )
+
+    def test_multibeam_default_beam(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+        synthetic_multibeam_filterbank_data,
+    ):
+        """beam=None on a multibeam file should default to beam 0."""
+        header = synthetic_multibeam_filterbank_header
+        data = synthetic_multibeam_filterbank_data
+        fpath = str(tmp_path / "test_multibeam.fil")
+
+        write_filterbank(fpath, data, header, nbits=8)
+
+        fb = FilterbankFile(fpath)
+        assert fb.nbeams == 4
+        assert fb.data.shape == (100, 64)
+        np.testing.assert_array_equal(fb.data.astype(np.uint8), data[0, :, :])
+
+    def test_multibeam_invalid_beam_raises(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+        synthetic_multibeam_filterbank_data,
+    ):
+        header = synthetic_multibeam_filterbank_header
+        data = synthetic_multibeam_filterbank_data
+        fpath = str(tmp_path / "test_multibeam.fil")
+
+        write_filterbank(fpath, data, header, nbits=8)
+
+        with pytest.raises(ValueError, match="beam=5 out of range"):
+            FilterbankFile(fpath, beam=5)
+
+        with pytest.raises(ValueError, match="beam=-1 out of range"):
+            FilterbankFile(fpath, beam=-1)
+
+    def test_multibeam_float32(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+    ):
+        header = synthetic_multibeam_filterbank_header.copy()
+        rng = np.random.RandomState(999)
+        data = rng.randn(4, 50, 64).astype(np.float32)
+        fpath = str(tmp_path / "test_multibeam32.fil")
+
+        write_filterbank(fpath, data, header, nbits=32)
+
+        for beam_idx in range(4):
+            fb = FilterbankFile(fpath, beam=beam_idx, verbose=False)
+            np.testing.assert_allclose(
+                fb.data.astype(np.float32), data[beam_idx, :, :], atol=1e-5
+            )
+
+
+class TestSingleBeamBackwardCompat:
+    def test_beam_param_ignored_single_beam(
+        self, tmp_path, synthetic_filterbank_header, synthetic_filterbank_data,
+    ):
+        """beam parameter is ignored for single-beam files."""
+        fpath = str(tmp_path / "test_single.fil")
+        write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
+
+        fb = FilterbankFile(fpath, beam=0)
+        assert fb.nbeams == 1
+        assert fb.data.shape == synthetic_filterbank_data.shape
+        np.testing.assert_array_equal(fb.data.astype(np.uint8), synthetic_filterbank_data)
+
+
+class TestMultibeamProperties:
+    def test_nbeams_property(
+        self, tmp_path, synthetic_multibeam_filterbank_header,
+        synthetic_multibeam_filterbank_data,
+    ):
+        fpath = str(tmp_path / "test_multibeam.fil")
+        write_filterbank(
+            fpath, synthetic_multibeam_filterbank_data,
+            synthetic_multibeam_filterbank_header, nbits=8,
+        )
+
+        fb = FilterbankFile(fpath, beam=0, verbose=False)
+        assert fb.nbeams == 4
+        assert fb.nsamples == 100
+        assert fb.nchans == 64
+
+    def test_nbeams_default_single(
+        self, tmp_path, synthetic_filterbank_header, synthetic_filterbank_data,
+    ):
+        fpath = str(tmp_path / "test_single.fil")
+        write_filterbank(fpath, synthetic_filterbank_data, synthetic_filterbank_header, nbits=8)
+
+        fb = FilterbankFile(fpath, verbose=False)
+        assert fb.nbeams == 1

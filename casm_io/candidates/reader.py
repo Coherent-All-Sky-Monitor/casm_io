@@ -3,21 +3,19 @@
 import pandas as pd
 
 
-# Hella T1 output columns -> readable names
-_T1_COLUMNS = [
-    'snr',
-    'sample_index',
-    'integration_index',
-    'mjd',
-    'boxcar_width',
-    'dm_index',
-    'dm',
-    'beam_index',
-]
+# Map from Hella T1 header names to readable names
+_T1_COLUMN_MAP = {
+    'SNR': 'snr',
+    'SAMP_START': 'sample_index',
+    'TIME_START': 'time_start',
+    'WIDTH': 'boxcar_width',
+    'DM_IDX': 'dm_index',
+    'DM': 'dm',
+    'BEAM_IDX': 'beam_index',
+}
 
 _T1_INT_COLUMNS = [
     'sample_index',
-    'integration_index',
     'boxcar_width',
     'dm_index',
     'beam_index',
@@ -34,7 +32,7 @@ class CandidateReader:
     Parameters
     ----------
     filepath : str or Path
-        Path to whitespace-separated T1 output file (no header).
+        Path to whitespace-separated T1 output file with header row.
     """
 
     def __init__(self, filepath):
@@ -42,9 +40,8 @@ class CandidateReader:
         self._df = pd.read_csv(
             filepath,
             sep=r'\s+',
-            header=None,
-            names=_T1_COLUMNS,
         )
+        self._df.rename(columns=_T1_COLUMN_MAP, inplace=True)
         for col in _T1_INT_COLUMNS:
             self._df[col] = self._df[col].astype(int)
 

@@ -26,15 +26,18 @@ def _write_standalone(filepath: str, data: np.ndarray, header: dict, nbits: int)
     with open(filepath, "wb") as f:
         write_sigproc_header(f, write_header)
 
+        # Flatten multibeam (nsamples, nbeams, nchans) -> (nsamples*nbeams, nchans)
+        write_data = data.reshape(-1, data.shape[-1]) if data.ndim == 3 else data
+
         if nbits == 8:
             if header.get("signed", 0):
-                data.astype(np.int8).tofile(f)
+                write_data.astype(np.int8).tofile(f)
             else:
-                data.astype(np.uint8).tofile(f)
+                write_data.astype(np.uint8).tofile(f)
         elif nbits == 16:
-            data.astype(np.uint16).tofile(f)
+            write_data.astype(np.uint16).tofile(f)
         elif nbits == 32:
-            data.astype(np.float32).tofile(f)
+            write_data.astype(np.float32).tofile(f)
         else:
             raise ValueError(f"Unsupported nbits: {nbits}")
 
@@ -97,6 +100,7 @@ def _write_sigpyproc(filepath: str, data: np.ndarray, header: dict, nbits: int) 
     sp_header = Header(**sp)
 
     out = sp_header.prep_outfile(filepath, nbits=nbits)
+    # Flatten multibeam (nsamples, nbeams, nchans) -> flat array
     # Feed data as a flat, C-contiguous (time-major) array so cwrite's
     # tofile() produces the correct SIGPROC byte order.
     out.cwrite(data.ravel())
@@ -120,9 +124,11 @@ def write_filterbank(
     filepath : str
         Output file path.
     data : np.ndarray
-        Data array (nsamples, nchans).
+        Data array, either (nsamples, nchans) for single-beam or
+        (nbeams, nsamples, nchans) for multibeam.
     header : dict
-        Filterbank header parameters.
+        Filterbank header parameters. For multibeam data, ``nbeams``
+        is set automatically from the data shape.
     nbits : int
         Bits per sample (8, 16, or 32). Default 8.
     backend : str
@@ -136,6 +142,11 @@ def write_filterbank(
         backend_used : str
             'sigpyproc' or 'standalone'.
     """
+    if data.ndim == 3:
+        header = header.copy()
+        header["nbeams"] = data.shape[0]
+        header.setdefault("ibeam", 0)
+
     if backend == "sigpyproc":
         try:
             return _write_sigpyproc(filepath, data, header, nbits)

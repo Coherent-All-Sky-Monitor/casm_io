@@ -75,6 +75,78 @@ class VisibilityFormat:
         return freq_desc
 
 
+    def freq_to_channel(self, freq_mhz: float) -> int:
+        """
+        Convert frequency in MHz to native (descending) channel index.
+
+        Channel 0 corresponds to freq_top_mhz. Channel indices increase
+        as frequency decreases (native descending order).
+
+        Parameters
+        ----------
+        freq_mhz : float
+            Frequency in MHz.
+
+        Returns
+        -------
+        int
+            Channel index in native order.
+
+        Raises
+        ------
+        ValueError
+            If frequency is outside the band.
+        """
+        if freq_mhz > self.freq_top_mhz + self.chan_bw_mhz / 2:
+            raise ValueError(
+                f"Frequency {freq_mhz:.4f} MHz above band top "
+                f"({self.freq_top_mhz:.4f} MHz)"
+            )
+        if freq_mhz < self.freq_bottom_mhz - self.chan_bw_mhz / 2:
+            raise ValueError(
+                f"Frequency {freq_mhz:.4f} MHz below band bottom "
+                f"({self.freq_bottom_mhz:.4f} MHz)"
+            )
+        idx = round((self.freq_top_mhz - freq_mhz) / self.chan_bw_mhz)
+        return max(0, min(self.nchan - 1, idx))
+
+    def freq_range_to_channels(
+        self, freq_lo: float, freq_hi: float
+    ) -> tuple[int, int]:
+        """
+        Convert frequency range to native (descending) channel indices.
+
+        Parameters
+        ----------
+        freq_lo : float
+            Lower frequency bound in MHz.
+        freq_hi : float
+            Upper frequency bound in MHz.
+
+        Returns
+        -------
+        tuple of (int, int)
+            (ch_start, ch_end) where ch_end is exclusive. In native
+            descending order, ch_start corresponds to freq_hi (higher
+            frequency = lower channel index).
+
+        Raises
+        ------
+        ValueError
+            If freq_lo >= freq_hi or range is outside the band.
+        """
+        if freq_lo >= freq_hi:
+            raise ValueError(
+                f"freq_lo ({freq_lo:.4f}) must be less than freq_hi ({freq_hi:.4f})"
+            )
+        # Higher freq -> lower channel index
+        ch_start = self.freq_to_channel(freq_hi)
+        ch_end = self.freq_to_channel(freq_lo) + 1
+        ch_start = max(0, ch_start)
+        ch_end = min(self.nchan, ch_end)
+        return ch_start, ch_end
+
+
 def load_format(name_or_path: str) -> VisibilityFormat:
     """
     Load a visibility format configuration.
