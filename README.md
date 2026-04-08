@@ -12,7 +12,7 @@ Unified I/O library for CASM (Coherent All-Sky Monitor) data products at OVRO.
 ```bash
 source ~/software/dev/casm_venvs/casm_offline_env/bin/activate
 cd /home/casm/software/dev/casm_io
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 ## Quick Start
