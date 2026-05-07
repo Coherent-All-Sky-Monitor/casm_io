@@ -2,12 +2,16 @@
 Filterbank quick-look plotting utilities.
 
 These are data inspection tools, not scientific analysis.
-All plots use the Agg backend, return fig objects, and optionally save to file.
+
+This module previously called ``matplotlib.use("Agg")`` at top level
+to keep filterbank plotting headless. That locked the global backend
+for any consumer that imported casm_io transitively (notably breaking
+``%matplotlib inline`` in Jupyter). Set ``MPLBACKEND=Agg`` in the
+environment if you want headless behaviour, or call
+``matplotlib.use("Agg")`` from the calling script.
 """
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from .header import get_frequency_axis, get_time_axis

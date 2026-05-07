@@ -1,8 +1,6 @@
 """Candidate inspection plots."""
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from casm_io.filterbank.plotting import (
@@ -10,6 +8,16 @@ from casm_io.filterbank.plotting import (
     _dedisperse,
 )
 from casm_io.filterbank.header import get_frequency_axis, get_time_axis
+
+# Note: a previous version called ``matplotlib.use("Agg")`` here at
+# module top. That locked the global backend whenever
+# ``import casm_io`` ran (transitive import path:
+# casm_io/__init__.py -> casm_io.candidates -> this module), which
+# silently broke ``%matplotlib inline`` in Jupyter notebooks. The
+# right way to force a non-interactive backend is to set
+# ``MPLBACKEND=Agg`` in the environment, or call
+# ``matplotlib.use("Agg")`` from the calling script — not from a
+# library module.
 
 
 def plot_candidate(
