@@ -161,6 +161,43 @@ class TestSlotTable:
         assert len(tbl) == 8
 
 
+class TestWithInactive:
+    def test_with_inactive_drops_listed(self, antenna_csv_standard):
+        ant = AntennaMapping.load(antenna_csv_standard)
+        original_active = ant.active_antennas()
+        # standard fixture: ants 1,2,3,4 with #3 already functional=0
+        ant2 = ant.with_inactive([1, 4])
+        new_active = ant2.active_antennas()
+        # 1 and 4 dropped; 3 was already inactive; 2 remains
+        assert new_active == [2]
+
+    def test_original_unchanged(self, antenna_csv_standard):
+        ant = AntennaMapping.load(antenna_csv_standard)
+        before = ant.active_antennas()
+        _ = ant.with_inactive([1, 2])
+        after = ant.active_antennas()
+        assert before == after
+
+    def test_unknown_id_silently_ignored(self, antenna_csv_standard):
+        ant = AntennaMapping.load(antenna_csv_standard)
+        ant2 = ant.with_inactive([999, 1])
+        # only 1 should drop; 999 is no-op
+        assert 1 not in ant2.active_antennas()
+        assert 2 in ant2.active_antennas()
+
+    def test_with_only_keeps_listed(self, antenna_csv_standard):
+        ant = AntennaMapping.load(antenna_csv_standard)
+        ant2 = ant.with_only([2, 4])
+        assert ant2.active_antennas() == [2, 4]
+
+    def test_with_only_then_back(self, antenna_csv_standard):
+        ant = AntennaMapping.load(antenna_csv_standard)
+        ant2 = ant.with_only([1])
+        ant3 = ant2.with_only([1, 2, 4])     # 3 was already functional=0 in source
+        # ant3 reflects the new restriction; ant.dataframe still original
+        assert ant3.active_antennas() == [1, 2, 4]
+
+
 class TestWithSnapOutput:
     def test_dual_layout_constructed(self, antenna_csv_standard, tmp_path):
         compute = AntennaMapping.load(antenna_csv_standard)

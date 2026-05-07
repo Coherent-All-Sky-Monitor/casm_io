@@ -234,6 +234,44 @@ class AntennaMapping:
         out = pd.DataFrame(rows).set_index("snap_input_idx").sort_index()
         return out
 
+    def with_inactive(self, antenna_ids) -> "AntennaMapping":
+        """Return a new mapping with the given antennas marked inactive.
+
+        Use after inspecting an autocorr plot to drop bad antennas from
+        every downstream stage without editing the CSV.
+
+        >>> ant = AntennaMapping.load(...)
+        >>> ant = ant.with_inactive([3, 7])    # ants 3 and 7 are now functional=0
+
+        The original mapping is unchanged. Antenna IDs not in the
+        mapping are silently ignored.
+        """
+        bad = set(int(x) for x in antenna_ids)
+        df = self._df.copy()
+        if "functional" not in df.columns:
+            df["functional"] = 1
+        mask = df["antenna_id"].astype(int).isin(bad)
+        df.loc[mask, "functional"] = 0
+        return AntennaMapping(df)
+
+    def with_only(self, antenna_ids) -> "AntennaMapping":
+        """Return a new mapping where ONLY the given antennas are active.
+
+        Inverse of :meth:`with_inactive`: every antenna NOT in the list
+        is marked inactive. Useful for "I only want these N antennas in
+        my fringe-stop" workflows.
+
+        >>> ant_subset = ant.with_only([1, 2, 5, 8, 12])
+        """
+        keep = set(int(x) for x in antenna_ids)
+        df = self._df.copy()
+        if "functional" not in df.columns:
+            df["functional"] = 1
+        df["functional"] = df["antenna_id"].astype(int).map(
+            lambda a: 1 if a in keep else 0
+        )
+        return AntennaMapping(df)
+
     def with_snap_output(self, output_mapping: "AntennaMapping") -> "DualLayout":
         """Pair this mapping (compute side) with a SNAP-output mapping.
 
