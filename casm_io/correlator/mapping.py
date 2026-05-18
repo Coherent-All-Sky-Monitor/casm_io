@@ -26,6 +26,76 @@ import numpy as np
 from casm_io.constants import resolve_layout_path
 
 
+TRUE_TOKENS  = {"true", "1", "yes", "y", "t"}
+FALSE_TOKENS = {"false", "0", "no", "n", "f", ""}
+
+
+def _parse_bool(series: pd.Series) -> pd.Series:
+    """Permissive boolean-token parser.
+
+    Accepts the usual {true/false, 1/0, yes/no, y/n, t/f} spellings (plus
+    empty string as False). Raises ``ValueError`` listing unrecognized
+    tokens so silent fall-through to False can never happen.
+    """
+    s = series.astype(str).str.strip().str.lower()
+    bad = ~s.isin(TRUE_TOKENS | FALSE_TOKENS)
+    if bad.any():
+        raise ValueError(
+            f"Unrecognized boolean tokens: {sorted(s[bad].unique())}"
+        )
+    return s.isin(TRUE_TOKENS).astype(int)
+
+
+def _translate_bf_weights_legacy_csv(df: pd.DataFrame) -> pd.DataFrame:
+    """Translate the legacy ``bf_weights_generator`` layout schema.
+
+    The legacy schema uses columns ``pos_id``, ``snap_A``, ``adc_A``,
+    ``ant64``, ``x_east_m``, ``y_north_m``, ``z_up_m``, ``pos_type``,
+    ``include_in_beamforming``. The convention since v1 has been
+    ``antenna_id = ant64 + 1`` (every fixture and test relied on this).
+
+    Rows are filtered to ``pos_type == 'antenna'`` so non-antenna rows
+    (calibration sources, structural markers) don't pollute the mapping.
+    """
+    df = df.copy()
+    if "pos_type" in df.columns:
+        df = df[df["pos_type"].astype(str).str.strip().str.lower() == "antenna"]
+    df = df[df["ant64"].notna()]
+    df = df[df["snap_A"].notna() & df["adc_A"].notna()]
+
+    df["snap_id"]    = df["snap_A"].astype(int)
+    df["adc"]        = df["adc_A"].astype(int)
+    df["antenna_id"] = df["ant64"].astype(int) + 1
+    df["packet_index"] = df["snap_id"] * 12 + df["adc"]
+
+    # Uniqueness guard: duplicate ant64 values would silently collapse antennas.
+    dup_mask = df["antenna_id"].duplicated(keep=False)
+    if dup_mask.any():
+        dup = sorted(df.loc[dup_mask, "antenna_id"].astype(int).unique().tolist())
+        raise ValueError(
+            f"Legacy CSV produced duplicate antenna_ids {dup}; "
+            f"check for duplicate ant64 values."
+        )
+
+    pos_renames = {"x_east_m": "x_m", "y_north_m": "y_m", "z_up_m": "z_m"}
+    df = df.rename(columns={k: v for k, v in pos_renames.items() if k in df.columns})
+
+    if "include_in_beamforming" in df.columns:
+        df["include_in_beamforming"] = _parse_bool(df["include_in_beamforming"])
+    if "installed" in df.columns:
+        df["functional"] = _parse_bool(df["installed"])
+
+    # Post-translate sanity: at least one row must remain beamforming-eligible.
+    if "include_in_beamforming" in df.columns:
+        if int(df["include_in_beamforming"].sum()) == 0:
+            raise ValueError(
+                "Legacy CSV translated with zero rows having "
+                "include_in_beamforming == 1; check the source CSV."
+            )
+
+    return df.reset_index(drop=True)
+
+
 class AntennaMapping:
     """
     Antenna hardware mapping loaded from CSV.
@@ -79,9 +149,37 @@ class AntennaMapping:
         If ``csv_path`` is None, resolves via
         ``$CASM_LAYOUT_CSV`` then ``$CASM_LAYOUT_DIR/current`` symlink
         (see :func:`casm_io.constants.resolve_layout_path`).
+
+        Two CSV schemas are accepted:
+
+        1. **Canonical** (what ``casm-build-layout`` writes): columns
+           ``antenna_id``/``snap_id``/``adc``/``packet_index`` plus
+           optional ``x_m``/``y_m``/``z_m``/``functional``. Legacy column
+           name aliases (``antenna``→``antenna_id``, ``snap``→``snap_id``,
+           ``packet_idx``→``packet_index``, ``feng_id``→``snap_id``,
+           ``feng_idx``→``packet_index``, ``x``/``y``/``z`` →
+           ``x_m``/``y_m``/``z_m``) are auto-renamed.
+
+        2. **Legacy bf_weights_generator** (test fixtures and old hand-
+           edited layouts): columns ``pos_id``/``snap_A``/``adc_A``/
+           ``ant64`` plus ``x_east_m``/``y_north_m``/``z_up_m``/
+           ``include_in_beamforming``/``pos_type``. Detected when all
+           four key columns are present simultaneously and translated
+           in place: ``antenna_id = ant64 + 1`` (the convention every
+           v1 fixture and test used), ``snap_id = snap_A``,
+           ``adc = adc_A``, ``packet_index = snap_A*12 + adc_A``,
+           positions renamed.
         """
         path = resolve_layout_path(csv_path)
         df = pd.read_csv(path)
+
+        # Legacy bf_weights_generator schema shim. Gated on all four
+        # marker columns being present so we don't false-trigger on a
+        # canonical CSV that happens to have a `pos_id` column.
+        legacy_markers = {"pos_id", "snap_A", "adc_A", "ant64"}
+        if legacy_markers.issubset(df.columns):
+            df = _translate_bf_weights_legacy_csv(df)
+
         # Support legacy column names
         rename = {}
         if "antenna" in df.columns and "antenna_id" not in df.columns:
@@ -200,8 +298,9 @@ class AntennaMapping:
         unwired slots the row is filled with ``antenna_id = -1`` and
         zeros / NaN.
 
-        The default 64-slot dense layout (n_snaps=6, n_adc=12 trimmed to
-        64 rows) covers what ``Array64Config`` provided in
+        The default dense layout (n_snaps × n_adc = 72 slots by default)
+        covers the full CAsMan hardware reality (6 SNAPs × 12 ADCs) and
+        supersedes what ``Array64Config`` provided in
         ``bf_weights_generator``.
         """
         n_total = n_snaps * n_adc
@@ -233,6 +332,56 @@ class AntennaMapping:
                 )
         out = pd.DataFrame(rows).set_index("snap_input_idx").sort_index()
         return out
+
+    def positions_64(self, n_snaps: int = 6, n_adc: int = 12) -> np.ndarray:
+        """ENU positions indexed by ``snap_input_idx`` (= snap_id*n_adc + adc).
+
+        Returns an ``(n_snaps*n_adc, 3)`` float64 array. Unwired slots are
+        ``[0, 0, 0]``. Source columns ``x_m``, ``y_m``, ``z_m`` are read
+        through ``slot_table()``; if any are missing the corresponding
+        coordinate is filled with zero.
+        """
+        slots = self.slot_table(n_snaps=n_snaps, n_adc=n_adc)
+        n_total = n_snaps * n_adc
+        out = np.zeros((n_total, 3), dtype=np.float64)
+        for axis, col in enumerate(("x_m", "y_m", "z_m")):
+            if col in slots.columns:
+                out[:, axis] = slots[col].fillna(0.0).astype(np.float64).values
+        return out
+
+    def active_mask_64(self, n_snaps: int = 6, n_adc: int = 12) -> np.ndarray:
+        """Per-slot active mask (shape ``(n_snaps*n_adc,)`` bool).
+
+        True iff the slot is wired AND included in beamforming AND
+        functional. Both flags act as gates — either one set to 0
+        deactivates the slot. Missing columns default to "no
+        restriction" (True), so a CSV without flags treats every wired
+        slot as active.
+
+        ``functional`` is the runtime override from
+        :meth:`with_inactive`; ``include_in_beamforming`` is the
+        layout-time intent set by CAsMan. Both must agree for the slot
+        to be active.
+        """
+        slots = self.slot_table(n_snaps=n_snaps, n_adc=n_adc)
+        wired = slots["antenna_id"].astype(int).values != -1
+        included = np.ones(len(slots), dtype=bool)
+        if "include_in_beamforming" in slots.columns:
+            included &= slots["include_in_beamforming"].fillna(0).astype(int).values == 1
+        if "functional" in slots.columns:
+            included &= slots["functional"].fillna(0).astype(int).values == 1
+        return wired & included
+
+    def antenna_ids_64(self, n_snaps: int = 6, n_adc: int = 12) -> np.ndarray:
+        """Per-slot antenna IDs (shape ``(n_snaps*n_adc,)`` int).
+
+        Wired slots carry the real antenna_id. Unwired slots are ``-1``.
+        Note this returns the antenna_id of every wired slot regardless
+        of active/inactive status; combine with :meth:`active_mask_64`
+        to select only the active antennas.
+        """
+        slots = self.slot_table(n_snaps=n_snaps, n_adc=n_adc)
+        return slots["antenna_id"].astype(int).values
 
     def with_inactive(self, antenna_ids) -> "AntennaMapping":
         """Return a new mapping with the given antennas marked inactive.

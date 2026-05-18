@@ -36,9 +36,10 @@ class TestFrequencyAxis:
         fmt = load_format("layout_64ant")
         freq = fmt.get_frequency_axis(order="descending")
         assert freq.shape == (3072,)
-        assert abs(freq[0] - 468.75) < 1e-6
+        assert abs(freq[0] - fmt.freq_top_mhz) < 1e-6
         assert freq[0] > freq[-1]
-        assert abs(freq[-1] - (468.75 - 3071 * 0.030517578125)) < 1e-4
+        # Channel 0 is at freq_top_mhz, channel 3071 is freq_top - 3071 * chan_bw.
+        assert abs(freq[-1] - (fmt.freq_top_mhz - 3071 * fmt.chan_bw_mhz)) < 1e-4
 
     def test_ascending_is_reverse(self):
         fmt = load_format("layout_64ant")
@@ -46,35 +47,37 @@ class TestFrequencyAxis:
         asc = fmt.get_frequency_axis(order="ascending")
         np.testing.assert_array_almost_equal(asc, desc[::-1])
 
-    def test_ascending_starts_near_375(self):
+    def test_ascending_first_at_band_bottom(self):
         fmt = load_format("layout_64ant")
         freq = fmt.get_frequency_axis(order="ascending")
-        # First channel should be near 375 MHz
-        assert freq[0] < 376.0
-        assert freq[-1] > 468.0
+        # First (lowest) channel should be just above freq_bottom_mhz.
+        assert freq[0] < fmt.freq_bottom_mhz + 1.0
+        # Last (highest) channel should be at freq_top_mhz.
+        assert abs(freq[-1] - fmt.freq_top_mhz) < 1e-4
 
     def test_channel_spacing(self):
         fmt = load_format("layout_64ant")
         freq = fmt.get_frequency_axis(order="descending")
         diffs = np.diff(freq)
         np.testing.assert_allclose(diffs, -fmt.chan_bw_mhz, atol=1e-10)
+
+
 class TestFreqToChannel:
     """Tests for freq_to_channel and freq_range_to_channels methods."""
 
     def test_freq_to_channel_top(self):
         fmt = load_format("layout_64ant")
-        assert fmt.freq_to_channel(468.75) == 0
+        assert fmt.freq_to_channel(fmt.freq_top_mhz) == 0
 
     def test_freq_to_channel_bottom(self):
         fmt = load_format("layout_64ant")
-        # Bottom freq ~375.03 MHz -> channel 3071
-        bottom = 468.75 - 3071 * 0.030517578125
+        # Bottom channel center = freq_top - 3071 * chan_bw, i.e. channel 3071.
+        bottom = fmt.freq_top_mhz - 3071 * fmt.chan_bw_mhz
         assert fmt.freq_to_channel(bottom) == 3071
 
     def test_freq_to_channel_mid(self):
         fmt = load_format("layout_64ant")
-        # Channel 500 = 468.75 - 500 * 0.030517578125 = 453.49...
-        freq_500 = 468.75 - 500 * 0.030517578125
+        freq_500 = fmt.freq_top_mhz - 500 * fmt.chan_bw_mhz
         assert fmt.freq_to_channel(freq_500) == 500
 
     def test_freq_to_channel_out_of_band_raises(self):
