@@ -102,6 +102,46 @@ print(fb.backend_used)                     # "sigpyproc" or "standalone"
 fb = FilterbankFile("/path/to/beam.fil", verbose=False)  # silence output
 ```
 
+### Antenna mapping
+
+```python
+from casm_io.correlator import AntennaMapping
+
+# Load the canonical layout CSV (resolves $CASM_LAYOUT_CSV / current symlink
+# when called with no argument) or pass an explicit path.
+ant = AntennaMapping.load("/path/to/antenna_layout.csv")
+ant.packet_index(antenna_id=5)         # 30
+ant.snap_adc(antenna_id=5)             # (2, 6)
+ant.format_antenna(5)                  # 'Ant 5 | S2A6 -> input 30'
+ant.active_antennas()                  # functional==1 rows
+
+# Mark antennas inactive at runtime without editing the CSV
+ant_clean = ant.with_inactive([3, 7])  # drop ants 3 and 7
+ant_subset = ant.with_only([1, 2, 5])  # keep only these
+
+# Dense per-slot helpers (default n_snaps=6, n_adc=12 → 72 slots, the
+# full CAsMan hardware reality):
+ant.positions_64()        # (72, 3) ENU, zeros for unwired slots
+ant.active_mask_64()      # (72,) bool: wired & functional & in beamforming
+ant.antenna_ids_64()      # (72,) int: antenna_id or -1
+```
+
+`AntennaMapping.load` accepts two CSV schemas:
+
+1. **Canonical** (what `casm-build-layout` writes): columns
+   `antenna_id`/`snap_id`/`adc`/`packet_index` plus optional
+   `x_m`/`y_m`/`z_m`/`functional`/`include_in_beamforming`. Legacy
+   column aliases (`antenna`, `snap`, `packet_idx`, `feng_id`,
+   `feng_idx`, `x`/`y`/`z`) are auto-renamed.
+2. **Legacy `bf_weights_generator`** (old fixtures): columns
+   `pos_id`/`snap_A`/`adc_A`/`ant64`/`x_east_m`/`y_north_m`/`z_up_m`.
+   Auto-detected when all four marker columns are present and
+   translated in place (`antenna_id = ant64 + 1`,
+   `packet_index = snap_A*12 + adc_A`). Boolean columns
+   (`include_in_beamforming`, `installed`) accept any of
+   `true/false`, `1/0`, `yes/no`, `y/n`, `t/f` (case-insensitive); the
+   translator raises on unrecognized tokens or duplicate antenna_ids.
+
 ### Candidates
 
 ```python
