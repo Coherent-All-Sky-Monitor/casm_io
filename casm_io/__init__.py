@@ -14,7 +14,7 @@ Quick start:
     from casm_io import CandidateReader
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 # Convenience re-exports
 from casm_io.correlator.formats import load_format, VisibilityFormat
