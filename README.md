@@ -1,11 +1,6 @@
 # casm_io
 
-Unified I/O library for CASM (Coherent All-Sky Monitor) data products at OVRO.
-
-- **Correlator visibilities** — binary `.dat` files
-- **Voltage DADA dumps** — 4+4 bit complex `.dada` files (3-subband)
-- **Filterbank files** — SIGPROC `.fil` format (read/write + quick-look plots)
-- **Candidates** — FRB search candidate lists (Hella T1)
+Unified I/O library for CASM (Coherent All-Sky Monitor) data products at OVRO. Provides correlator visibilities, voltage DADA dumps, filterbank files, and FRB candidates behind a consistent Python API. No fringe-stopping, calibration, or beamforming logic lives here.
 
 ## Install
 
@@ -15,181 +10,131 @@ cd /home/casm/software/dev/casm_io
 pip install --no-build-isolation -e .
 ```
 
-## Quick Start
+## Correlator visibilities
 
-### Correlator visibilities
-
-**Recommended: `read_visibilities()`** — give it a time range and it figures out everything:
+`read_visibilities` auto-discovers every `visibilities_*` subdirectory under `data_root`, finds all observations overlapping the requested time range, stitches them, and warns about gaps.
 
 ```python
-from casm_io.correlator import read_visibilities
+from casm_io.correlator import read_visibilities, load_format
 
-# Just time range — auto-discovers data directory and observations
-result = read_visibilities("2026-03-24 06:00", "2026-03-24 08:00")
-print(result.vis.shape)          # (52, 3072, 8256) complex64
-
-# With frequency channel slicing 
+fmt = load_format("layout_64ant")   # required for headerless files pre-2026-03-04
 result = read_visibilities(
-    "2026-03-24 06:00", "2026-03-24 08:00",
-    channels=(500, 506),         # native descending channel indices
+    time_start="2026-05-16 11:30:00",
+    time_end="2026-05-16 14:30:00",
+    time_tz="America/Los_Angeles",  # recommended for OVRO operations
+    data_root="/mnt",               # scanned recursively for visibilities_* dirs
+    fmt=fmt,
+    freq_order="descending",        # recommended (CASM native; default)
+    verbose=True,                   # recommended for interactive use
 )
-print(result.vis.shape)          # (52, 6, 8256) complex64
-
-# Or specify frequency range in MHz
-result = read_visibilities(
-    "2026-03-24 06:00", "2026-03-24 08:00",
-    freq_range_mhz=(420, 425),   # auto-converted to channel indices
-    freq_order="ascending",
-)
-
-# Timezone support
-result = read_visibilities(
-    "2026-03-23 23:00", "2026-03-24 01:00",
-    time_tz="America/Los_Angeles",
-    channels=(500, 506),
-)
-
-# Baseline extraction
-result = read_visibilities(
-    "2026-03-24 06:00", "2026-03-24 08:00",
-    ref=0, targets=[1, 2, 3],
-    channels=(500, 506),
-)
-
-# Both access styles work
-result.vis                       # attribute access
-result['vis']                    # dict-style access
-result.metadata['gaps']          # any data gaps in the time range
-result.metadata['observations']  # which observations were used
+vis       = result.vis        # (T, F, n_bl) complex64
+freq_mhz  = result.freq_mhz   # (F,) float64, descending
+time_unix = result.time_unix  # (T,) float64 Unix timestamps
 ```
 
-**Low-level: `VisibilityReader`** — when you need file-level control:
+Variations:
 
 ```python
-from casm_io.correlator import VisibilityReader, load_format
+# Frequency range slice (post-load, no re-read needed)
+mask = (freq_mhz >= 440) & (freq_mhz <= 465)
+vis_sub = vis[:, mask, :]
 
-# New files (since March 4 2026) — format auto-detected from header
-reader = VisibilityReader("/data/casm/visibilities_64ant", "2026-03-05-08:02:39")
-result = reader.read(nfiles=5, channels=(500, 506))
+# Or read only those channels from disk (faster for large obs)
+result = read_visibilities(..., freq_range_mhz=(440, 465))
 
-# Old files — pass fmt explicitly
-fmt = load_format("layout_64ant")
-reader = VisibilityReader("/data/casm/visibilities_64ant", "2026-01-27-20:38:33", fmt)
-result = reader.read(nfiles=5, skip_nfiles=10)
+# Channel index slice (native descending order; exclusive end)
+result = read_visibilities(..., channels=(631, 1443))
+
+# All baselines toward a reference input
+result = read_visibilities(..., ref=10, targets=[0, 1, 2, 5])
+
+# Single (i, j) baseline from the full matrix
+from casm_io.correlator.baselines import triu_flat_index
+bl_idx = triu_flat_index(nsig, min(i, j), max(i, j))
+v_pair = result.vis[:, :, bl_idx]   # (T, F) complex64
 ```
 
-### Voltage DADA files
+`channels` and `freq_range_mhz` are mutually exclusive. See [docs/correlator.md](docs/correlator.md) for full parameter reference.
+
+## Antenna mapping
+
+```python
+from casm_io.correlator import AntennaMapping
+
+# No path -> canonical layout: $CASM_LAYOUT_CSV, then $CASM_LAYOUT_DIR/current
+ant = AntennaMapping.load()
+# Or pin an explicit CSV:
+ant = AntennaMapping.load("/path/to/antenna_layout.csv")
+ant.packet_index(antenna_id=5)    # correlator input index
+ant.snap_adc(antenna_id=5)        # (snap_id, adc)
+ant.format_antenna(5)             # 'Ant 5 | S2A6 -> input 30'
+ant.active_antennas()             # list of functional antenna IDs
+
+# Mark antennas inactive without editing the CSV (returns new object)
+ant_clean = ant.with_inactive([3, 7])
+ant_subset = ant.with_only([1, 2, 5])
+
+# Dense 72-slot table (6 SNAPs x 12 ADCs)
+ant.slot_table()                  # DataFrame, 72 rows; -1 for unwired slots
+ant.positions_64()                # (72, 3) ENU array, zeros for unwired
+ant.active_mask_64()              # (72,) bool: wired & functional & beamforming
+ant.antenna_ids_64()              # (72,) int: antenna_id or -1
+```
+
+See [docs/antenna_mapping.md](docs/antenna_mapping.md) for CSV schema details and the dual-schema auto-detection logic.
+
+## Voltage DADA files
 
 ```python
 from casm_io import VoltageReader
 
 reader = VoltageReader("/mnt/nvme3/data/casm/voltage_dumps", "2026-02-17-21:10:43")
 result = reader.read_full_band(antenna_csv="/path/to/antenna_layout.csv")
-print(result.voltages.shape)     # (ntime, 3072, 16) complex64
-print(result.utc_start)          # '2026-02-17-21:10:43'
+print(result.voltages.shape)   # (ntime, 3072, 16) complex64
 ```
 
-### Filterbank files
+See [docs/voltage.md](docs/voltage.md).
+
+## Filterbank files
 
 ```python
 from casm_io import FilterbankFile
 
-fb = FilterbankFile("/path/to/beam.fil")   # prints backend and shape
-print(fb.nchans, fb.nsamples)              # header info, no data loaded yet
-print(fb.data.shape)                       # (nsamples, nchans) — loaded on access
-print(fb.backend_used)                     # "sigpyproc" or "standalone"
-
-fb = FilterbankFile("/path/to/beam.fil", verbose=False)  # silence output
+fb = FilterbankFile("/path/to/beam.fil")
+print(fb.nchans, fb.nsamples)
+data = fb.data                 # (nsamples, nchans) float32, lazy load
 ```
 
-### Antenna mapping
+See [docs/filterbank.md](docs/filterbank.md).
 
-```python
-from casm_io.correlator import AntennaMapping
-
-# Load the canonical layout CSV (resolves $CASM_LAYOUT_CSV / current symlink
-# when called with no argument) or pass an explicit path.
-ant = AntennaMapping.load("/path/to/antenna_layout.csv")
-ant.packet_index(antenna_id=5)         # 30
-ant.snap_adc(antenna_id=5)             # (2, 6)
-ant.format_antenna(5)                  # 'Ant 5 | S2A6 -> input 30'
-ant.active_antennas()                  # functional==1 rows
-
-# Mark antennas inactive at runtime without editing the CSV
-ant_clean = ant.with_inactive([3, 7])  # drop ants 3 and 7
-ant_subset = ant.with_only([1, 2, 5])  # keep only these
-
-# Dense per-slot helpers (default n_snaps=6, n_adc=12 → 72 slots, the
-# full CAsMan hardware reality):
-ant.positions_64()        # (72, 3) ENU, zeros for unwired slots
-ant.active_mask_64()      # (72,) bool: wired & functional & in beamforming
-ant.antenna_ids_64()      # (72,) int: antenna_id or -1
-```
-
-`AntennaMapping.load` accepts two CSV schemas:
-
-1. **Canonical** (what `casm-build-layout` writes): columns
-   `antenna_id`/`snap_id`/`adc`/`packet_index` plus optional
-   `x_m`/`y_m`/`z_m`/`functional`/`include_in_beamforming`. Legacy
-   column aliases (`antenna`, `snap`, `packet_idx`, `feng_id`,
-   `feng_idx`, `x`/`y`/`z`) are auto-renamed.
-2. **Legacy `bf_weights_generator`** (old fixtures): columns
-   `pos_id`/`snap_A`/`adc_A`/`ant64`/`x_east_m`/`y_north_m`/`z_up_m`.
-   Auto-detected when all four marker columns are present and
-   translated in place (`antenna_id = ant64 + 1`,
-   `packet_index = snap_A*12 + adc_A`). Boolean columns
-   (`include_in_beamforming`, `installed`) accept any of
-   `true/false`, `1/0`, `yes/no`, `y/n`, `t/f` (case-insensitive); the
-   translator raises on unrecognized tokens or duplicate antenna_ids.
-
-### Candidates
+## Candidates
 
 ```python
 from casm_io import CandidateReader
 
 cands = CandidateReader("/path/to/t1_candidates.txt")
 print(cands.n_candidates, cands.snr_range, cands.dm_range)
-print(cands.df.head())
 ```
 
-**plot_candidate** — plot a dedispersed waterfall and time series for a single candidate:
+See [docs/candidates.md](docs/candidates.md).
+
+## Constants
 
 ```python
-from casm_io.candidates import CandidateReader, plot_candidate
-from casm_io.filterbank import FilterbankFile
-
-fb = FilterbankFile("/path/to/injection.fil", verbose=False)
-cr = CandidateReader("/path/to/candidates.out")
-best = int(cr.df["snr"].values.argmax())
-plot_candidate(fb, best, cr, output_path="best_candidate.png")
+from casm_io.constants import OVRO_LAT_DEG, OVRO_LON_DEG, OVRO_ELEV_M, C_LIGHT_M_S
 ```
-
-`nsub` (default 64) controls the number of frequency subbands in the waterfall. `margin_factor` (default 2.0) sets the time window around the candidate in seconds.
-
-**CandidateMatcher** — match hella candidates against a known injection using DM and time windows. Band parameters are read directly from the filterbank header.
-
-```python
-from casm_io.candidates import CandidateReader, CandidateMatcher
-from casm_io.filterbank import FilterbankFile
-
-fb = FilterbankFile("/path/to/injection.fil", verbose=False)
-cr = CandidateReader("/path/to/candidates.out")
-matcher = CandidateMatcher(fb)
-result = matcher.match(cr.df, dm_true=100.0, fwhm_samples=5.0)
-if result["detected"]:
-    best = result["best"]
-    print(f"SNR={best['snr']:.1f}  DM={best['dm']:.1f}")
-```
-
-## Documentation
-
-- [Correlator visibilities](docs/correlator.md)
-- [Voltage DADA files](docs/voltage.md)
-- [Filterbank files](docs/filterbank.md)
-- [Candidates](docs/candidates.md)
 
 ## Testing
 
 ```bash
 python -m pytest tests/ -v
 ```
+
+## Documentation
+
+- [Sign & ordering conventions](docs/CONVENTIONS.md) — shared contract for all CASM offline packages
+- [Correlator visibilities](docs/correlator.md)
+- [Antenna mapping](docs/antenna_mapping.md)
+- [Voltage DADA files](docs/voltage.md)
+- [Filterbank files](docs/filterbank.md)
+- [Candidates](docs/candidates.md)
