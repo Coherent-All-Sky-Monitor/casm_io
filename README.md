@@ -132,7 +132,7 @@ python -m pytest tests/ -v
 
 ## Documentation
 
-- [Sign & ordering conventions](docs/CONVENTIONS.md) — shared contract for all CASM offline packages
+- [Sign & ordering conventions](docs/CONVENTIONS.md) — the sign, ordering, and indexing rules every CASM offline package follows
 - [Correlator visibilities](docs/correlator.md)
 - [Antenna mapping](docs/antenna_mapping.md)
 - [Voltage DADA files](docs/voltage.md)

@@ -1,6 +1,6 @@
 # Antenna Mapping
 
-`AntennaMapping` loads a CSV that maps each physical antenna to its SNAP/ADC port and correlator input index (`packet_index`). It is the contract between CAsMan (hardware management) and every CASM analysis repo.
+`AntennaMapping` loads a CSV that maps each physical antenna to its SNAP/ADC port and correlator input index (`packet_index`). This CSV is the hand-off point between CAsMan (hardware management) and every CASM analysis repo.
 
 ## Loading
 

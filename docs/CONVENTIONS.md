@@ -1,11 +1,12 @@
 # CASM Sign & Ordering Conventions
 
-The one-page contract shared by every CASM offline package
-(`casm_io`, `casm_vis_analysis`, `casm_calibrator`, `bf_weights_generator`,
-`casm_imaging`, `casm_offline_frb_injector`). If a function applies a phase,
-orders baselines, or indexes an antenna, its behaviour must match this page —
-and its docstring should cite it. Historical bugs in this ecosystem (fringed
-images, destroyed beams) have all been sign or ordering mistakes.
+One page of sign, ordering, and indexing rules shared by every CASM offline
+package (`casm_io`, `casm_vis_analysis`, `casm_calibrator`,
+`bf_weights_generator`, `casm_imaging`, `casm_offline_frb_injector`). If a
+function applies a phase, orders baselines, or indexes an antenna, it must
+match this page — and its docstring should point here. Every serious bug
+we've had on sky (fringed images, destroyed beams) came down to a sign or
+ordering mistake.
 
 ## Geometry and phase
 
