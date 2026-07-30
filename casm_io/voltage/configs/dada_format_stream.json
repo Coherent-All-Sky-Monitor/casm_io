@@ -1,0 +1,21 @@
+{
+  "header_size": 4096,
+  "n_snap_slots": 11,
+  "n_adc_per_snap": 12,
+  "n_chan_per_subband": 512,
+  "n_subbands": 6,
+  "n_chan_total": 3072,
+  "tsamp_us": 32.768,
+  "active_snaps": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "freq_top_mhz": 484.375,
+  "freq_bottom_mhz": 390.625,
+  "chan_bw_mhz": 0.030517578125,
+  "native_order": "descending",
+  "subband_dirs": [
+    "stream_0", "stream_1", "stream_2", "stream_3", "stream_4", "stream_5"
+  ],
+  "layout": "stream",
+  "raw_chan_offset": 512,
+  "n_chan_pfb": 4096,
+  "pfb_freq_bottom_mhz": 375.0
+}

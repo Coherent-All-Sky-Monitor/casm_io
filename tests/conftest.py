@@ -187,6 +187,246 @@ def synthetic_dada_file(tmp_path):
     }
 
 
+def _stream_header_lines(subband_id, obs_offset, dump_bytes, resolution,
+                         start_channel, n_chan=512):
+    """DADA header lines for one triggered-dump stream file."""
+    return [
+        "HDR_SIZE 4096",
+        "UTC_START 2026-03-16-00:30:11",
+        "TSAMP 32.768",
+        f"NCHAN {n_chan}",
+        "NBIT 4",
+        "NDIM 2",
+        "NANT 66",
+        "NPOL 2",
+        "ENCODING TWOSCOMPLEMENT",
+        "BW -15.625",
+        "CHANBW -0.030517578125",
+        "BYTES_PER_SECOND 2062500000.0",
+        f"RESOLUTION {resolution}",
+        f"START_CHANNEL {start_channel}",
+        f"END_CHANNEL {start_channel + n_chan - 1}",
+        "UDP_NANT 6",
+        f"STREAM_SUBBAND_ID {subband_id}",
+        "FREQ 437.5",
+        f"OBS_OFFSET {obs_offset}",
+        "DUMP_UTC_START 2026-03-16-00:30:32.700",
+        "DUMP_UTC_STOP 2026-03-16-00:30:32.800",
+        f"DUMP_BYTES {dump_bytes}",
+        "FILE_NUMBER 0",
+        "FILE_SIZE 20608862208",
+    ]
+
+
+def _write_stream_file(path, header_lines, raw):
+    """Write a 4096-byte ASCII header followed by raw bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header_text = "\n".join(header_lines) + "\n"
+    with open(path, "wb") as f:
+        f.write(header_text.encode("ascii").ljust(4096, b"\x00"))
+        raw.tofile(f)
+
+
+def _stream_ramp(t_start, n_time, subband_id, n_snaps, n_chan, n_adc):
+    """Raw bytes encoding a time ramp: sample t unpacks to t + 1j*subband_id.
+
+    The upper nibble (real part) counts time from the start of the dump and
+    the lower nibble (imaginary part) is the stream index, so a stitched read
+    shows immediately if files or sub-bands landed in the wrong order.
+    """
+    times = np.arange(t_start, t_start + n_time, dtype=np.uint8)
+    values = ((times & 0x07) << 4) | (subband_id & 0x07)
+    return np.broadcast_to(
+        values[:, None, None, None], (n_time, n_snaps, n_chan, n_adc)
+    ).astype(np.uint8)
+
+
+@pytest.fixture
+def synthetic_stream_dump(tmp_path):
+    """Write a synthetic triggered dump in the stream_N layout.
+
+    Streams 0, 1 and 3 are present (2, 4 and 5 are missing, to exercise
+    zero-filling); stream 0 is split over two files with a continuous
+    OBS_OFFSET, and stream 1 has 3 samples of junk past DUMP_BYTES.
+
+    Returns (data_dir, timestamp, config) where config holds the shape
+    parameters used to build the files.
+    """
+    n_snaps = 11
+    n_adc = 12
+    n_chan = 512
+    n_time = 7            # valid samples per stream, after DUMP_BYTES
+    n_time_split = 4      # samples in the first file of stream 0
+    resolution = n_snaps * n_chan * n_adc      # 67584 bytes per time sample
+    timestamp = "2026-03-16-00:30:11"
+
+    def name(obs_offset, filenum):
+        return f"{timestamp}_{obs_offset:016d}.{filenum:06d}.dada"
+
+    # Stream 0: split over two files, second one continues the ramp
+    for filenum, (t_start, n_t) in enumerate(
+        [(0, n_time_split), (n_time_split, n_time - n_time_split)]
+    ):
+        obs_offset = t_start * resolution
+        _write_stream_file(
+            tmp_path / "stream_0" / name(obs_offset, filenum),
+            _stream_header_lines(0, obs_offset, n_t * resolution, resolution, 512),
+            _stream_ramp(t_start, n_t, 0, n_snaps, n_chan, n_adc),
+        )
+
+    # Stream 1: one file, written into a longer pre-allocated span — the
+    # 3 samples past DUMP_BYTES are junk and must not be read
+    raw = np.concatenate([
+        _stream_ramp(0, n_time, 1, n_snaps, n_chan, n_adc),
+        np.full((3, n_snaps, n_chan, n_adc), 0xEE, dtype=np.uint8),
+    ])
+    _write_stream_file(
+        tmp_path / "stream_1" / name(0, 0),
+        _stream_header_lines(1, 0, n_time * resolution, resolution, 1024),
+        raw,
+    )
+
+    # Stream 3: one file, no DUMP_BYTES padding
+    _write_stream_file(
+        tmp_path / "stream_3" / name(0, 0),
+        _stream_header_lines(3, 0, n_time * resolution, resolution, 2048),
+        _stream_ramp(0, n_time, 3, n_snaps, n_chan, n_adc),
+    )
+
+    return str(tmp_path), timestamp, {
+        "n_snaps": n_snaps, "n_adc": n_adc, "n_chan": n_chan,
+        "n_time": n_time, "n_time_split": n_time_split,
+        "resolution": resolution, "streams": [0, 1, 3],
+    }
+
+
+@pytest.fixture
+def synthetic_stream_dump_43slots(tmp_path):
+    """A stream file from the March 4 epoch: 43 SNAP slots, not 11.
+
+    RESOLUTION has to be read per file, so a reader that assumes the config's
+    11 slots reshapes this file wrongly.
+
+    Returns (data_dir, timestamp, config).
+    """
+    n_snaps = 43
+    n_adc = 12
+    n_chan = 512
+    n_time = 2
+    resolution = n_snaps * n_chan * n_adc      # 264192
+    timestamp = "2026-03-04-23:16:08"
+
+    raw = _stream_ramp(0, n_time, 0, n_snaps, n_chan, n_adc)
+    _write_stream_file(
+        tmp_path / "stream_0" / f"{timestamp}_{0:016d}.{0:06d}.dada",
+        _stream_header_lines(0, 0, n_time * resolution, resolution, 512),
+        raw,
+    )
+
+    return str(tmp_path), timestamp, {
+        "n_snaps": n_snaps, "n_adc": n_adc, "n_chan": n_chan,
+        "n_time": n_time, "resolution": resolution,
+    }
+
+
+@pytest.fixture
+def synthetic_stream_dump_two_dumps(tmp_path):
+    """Two separate dumps in stream_0 sharing one UTC_START.
+
+    Both files match the bare timestamp prefix, but their OBS_OFFSETs are
+    84 s apart, so they are not one dump split over two files. The second
+    dump's time ramp starts at 4 so the two are told apart in the data.
+
+    Returns (data_dir, timestamp, prefixes, config) where prefixes are the
+    full UTC_START_OBSOFFSET names of the two dumps.
+    """
+    n_snaps = 11
+    n_adc = 12
+    n_chan = 512
+    n_time = 3
+    resolution = n_snaps * n_chan * n_adc
+    timestamp = "2026-03-16-00:30:11"
+    bytes_per_second = 2062500000.0
+    gap_s = 84.0
+
+    offsets = [0, int(gap_s * bytes_per_second)]
+    for offset, t_start in zip(offsets, [0, 4]):
+        _write_stream_file(
+            tmp_path / "stream_0" / f"{timestamp}_{offset:016d}.{0:06d}.dada",
+            _stream_header_lines(0, offset, n_time * resolution, resolution, 512),
+            _stream_ramp(t_start, n_time, 0, n_snaps, n_chan, n_adc),
+        )
+
+    prefixes = [f"{timestamp}_{offset:016d}" for offset in offsets]
+    return str(tmp_path), timestamp, prefixes, {
+        "n_snaps": n_snaps, "n_adc": n_adc, "n_chan": n_chan,
+        "n_time": n_time, "resolution": resolution,
+        "gap_s": gap_s, "t_starts": [0, 4],
+    }
+
+
+@pytest.fixture
+def synthetic_stream_dump_misaligned(tmp_path):
+    """Streams 0 and 1 whose first files start at different OBS_OFFSETs.
+
+    A healthy dump writes the same OBS_OFFSET into every stream, so this is
+    two different dumps that happen to share a UTC_START.
+
+    Returns (data_dir, timestamp, offsets, config).
+    """
+    n_snaps = 11
+    n_adc = 12
+    n_chan = 512
+    n_time = 2
+    resolution = n_snaps * n_chan * n_adc
+    timestamp = "2026-03-16-00:30:11"
+
+    offsets = {0: 0, 1: 5 * resolution}
+    for index, offset in offsets.items():
+        _write_stream_file(
+            tmp_path / f"stream_{index}"
+            / f"{timestamp}_{offset:016d}.{0:06d}.dada",
+            _stream_header_lines(
+                index, offset, n_time * resolution, resolution,
+                512 * (index + 1),
+            ),
+            _stream_ramp(0, n_time, index, n_snaps, n_chan, n_adc),
+        )
+
+    return str(tmp_path), timestamp, offsets, {
+        "n_snaps": n_snaps, "n_adc": n_adc, "n_chan": n_chan,
+        "n_time": n_time, "resolution": resolution,
+    }
+
+
+@pytest.fixture
+def synthetic_stream_dump_all_streams(tmp_path):
+    """A complete triggered dump: all six streams, one file each.
+
+    Returns (data_dir, timestamp, config).
+    """
+    n_snaps = 11
+    n_adc = 12
+    n_chan = 512
+    n_time = 2
+    resolution = n_snaps * n_chan * n_adc
+    timestamp = "2026-03-16-00:33:14"
+
+    for index in range(6):
+        _write_stream_file(
+            tmp_path / f"stream_{index}" / f"{timestamp}_{0:016d}.{0:06d}.dada",
+            _stream_header_lines(
+                index, 0, n_time * resolution, resolution, 512 * (index + 1),
+            ),
+            _stream_ramp(0, n_time, index, n_snaps, n_chan, n_adc),
+        )
+
+    return str(tmp_path), timestamp, {
+        "n_snaps": n_snaps, "n_adc": n_adc, "n_chan": n_chan,
+        "n_time": n_time, "resolution": resolution,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Filterbank fixtures
 # ---------------------------------------------------------------------------

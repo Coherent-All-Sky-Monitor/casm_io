@@ -20,6 +20,57 @@ print(result.utc_start)            # '2026-02-17-21:10:43'
 print(result.antenna_df.head())    # antenna mapping DataFrame
 ```
 
+Every CSV row is bounds-checked against the layout before extraction: `snap_id`
+and `adc` outside the hardware range raise, naming the row, rather than silently
+handing back a different antenna.
+
+## Triggered dumps (stream_0 ... stream_5)
+
+Triggered dumps use per-stream directories with 512 channels each instead of the
+three 1024-channel `chan*` directories. `VoltageReader` picks the layout from the
+subdirectories it finds, so the calls are the same:
+
+```python
+reader = VoltageReader("/mnt/nvme3/data/casm/cand_dumps", "2026-03-16-00:30:11")
+print(reader.subbands_found)  # [0, 1, 2] — streams 3-5 weren't written
+
+result = reader.read_full_band(n_time=1000, snaps=[0, 2, 4])
+print(result.voltages[0].shape)   # (1000, 3072, 12)
+```
+
+Streams that weren't written are zero-filled with a warning; the read only fails
+if no stream has data. Their indices come back in `result.filled_subbands`, so a
+script can record which part of the band is zeros:
+
+```python
+if result.filled_subbands:
+    print(f"no data for streams {result.filled_subbands} — zeros")
+```
+
+Stream 0 is the top of the band, as with the legacy layout.
+
+The streams of one dump carry the same `OBS_OFFSET` in their first file. If they
+don't, the timestamp prefix has picked up different dumps in different stream
+directories and `read_full_band()` raises, naming the streams and their offsets.
+
+A dump longer than about 10 seconds is split over several files. They are found
+by timestamp prefix, ordered by the `OBS_OFFSET` in the filename and read as one
+timeline, so `n_time` counts from the start of the dump. Files sharing a
+UTC_START can be separate dumps, so when consecutive files don't run end to end
+the read raises with the size of the gap. Extend the timestamp with the offset
+to pick one dump:
+
+```python
+reader = VoltageReader(dump_dir, "2026-03-16-00:30:11_0000044756219904")
+```
+
+Pass `allow_gaps=True` to `read_subband()` or `read_full_band()` to stitch across
+the gap anyway (a warning replaces the error). The samples either side are then
+not contiguous in time.
+
+Pass `config=` (a path to a JSON format config, or a dict) to override the layout
+choice.
+
 ## Result attributes
 
 ### `FullBandResult` (from `read_full_band()`)
@@ -31,6 +82,7 @@ print(result.antenna_df.head())    # antenna mapping DataFrame
 | `freq_mhz` | `np.ndarray` | Full 3072-channel frequency axis |
 | `utc_start` | `str` | UTC_START from header |
 | `antenna_df` | `DataFrame` or `None` | Antenna mapping if CSV was provided |
+| `filled_subbands` | `list[int]` | Sub-band indices zero-filled because no data was found; empty for a complete read |
 
 ### `SubbandResult` (from `read_subband()`)
 

@@ -2,7 +2,9 @@
 casm_io.voltage — Voltage dump DADA file I/O.
 
 Reads 4+4 bit complex voltage data from DADA files.
-Supports single-subband and 3-subband (chan0_1023, chan1024_2047, chan2048_3071) formats.
+Supports single-subband and 3-subband (chan0_1023, chan1024_2047, chan2048_3071)
+formats, and triggered dumps split over per-stream directories (stream_0 ...
+stream_5).
 """
 
 from .reader import VoltageReader

@@ -49,3 +49,6 @@ class FullBandResult(_ResultBase):
     freq_mhz: np.ndarray
     utc_start: str
     antenna_df: pd.DataFrame | None
+    #: Sub-band indices that were zero-filled because no data was found for
+    #: them. Empty for a complete read.
+    filled_subbands: list[int] = dataclasses.field(default_factory=list)
