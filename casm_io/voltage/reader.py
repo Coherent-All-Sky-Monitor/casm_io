@@ -217,6 +217,7 @@ class VoltageReader:
         trust_header: bool = False,
         verbose: bool = True,
         allow_gaps: bool = False,
+        time_offset: int = 0,
     ) -> dict:
         """
         Read a single DADA subband file.
@@ -226,7 +227,7 @@ class VoltageReader:
         index : int
             Subband index (0-2 legacy, 0-5 stream layout).
         n_time : int, optional
-            Number of time samples to read from the start of the dump.
+            Number of time samples to read, counted after time_offset.
             None = all. For the stream layout this counts across the files
             the dump is split into.
         snaps : list of int, optional
@@ -242,6 +243,10 @@ class VoltageReader:
             do not run end to end in OBS_OFFSET, the read raises by default —
             they are usually separate dumps. Set True to stitch across the
             gap (or overlap) with a warning instead.
+        time_offset : int
+            Time samples to skip from the start of the dump before reading.
+            Reads clip at the end of the dump, possibly to 0 samples. Lets a
+            long dump be read in gulps so it never sits in memory whole.
 
         Returns
         -------
@@ -262,10 +267,12 @@ class VoltageReader:
         cfg = self._cfg
         if snaps is None:
             snaps = cfg["active_snaps"]
+        if time_offset < 0:
+            raise ValueError(f"time_offset must be >= 0, got {time_offset}")
 
         if self._stream_layout:
             voltages, header = self._read_stream_subband(
-                index, n_time, snaps, verbose, allow_gaps,
+                index, n_time, snaps, verbose, allow_gaps, time_offset,
             )
             if freq_order == "ascending":
                 for s in snaps:
@@ -287,21 +294,27 @@ class VoltageReader:
         bytes_per_time = n_snaps * n_chan_sub * n_adc
         n_time_total = data_size // bytes_per_time
 
+        available = max(n_time_total - time_offset, 0)
         if n_time is None:
-            n_time = n_time_total
+            n_time = available
         else:
-            n_time = min(n_time, n_time_total)
+            n_time = min(n_time, available)
 
         if verbose:
             print(f"Reading {filename}")
-            print(f"  n_time={n_time} / {n_time_total}, SNAPs={snaps}")
+            print(f"  n_time={n_time} / {n_time_total} "
+                  f"(offset {time_offset}), SNAPs={snaps}")
 
-        n_bytes = n_time * bytes_per_time
-        with open(filename, "rb") as f:
-            f.seek(HEADER_SIZE)
-            raw = np.frombuffer(f.read(n_bytes), dtype=np.uint8)
-
-        raw = raw.reshape(n_time, n_snaps, n_chan_sub, n_adc)
+        # Memmap so only the requested time slice (and, page-wise, only the
+        # requested SNAPs) is ever read from disk
+        if n_time > 0:
+            mm = np.memmap(
+                filename, dtype=np.uint8, mode="r", offset=HEADER_SIZE,
+                shape=(n_time_total, n_snaps, n_chan_sub, n_adc),
+            )
+        else:
+            mm = np.zeros((0, n_snaps, n_chan_sub, n_adc), dtype=np.uint8)
+        raw = mm[time_offset:time_offset + n_time]
 
         voltages = {}
         for i, s in enumerate(snaps):
@@ -310,6 +323,7 @@ class VoltageReader:
             voltages[s] = unpack_4bit(raw[:, s, :, :])
             if freq_order == "ascending":
                 voltages[s] = voltages[s][:, ::-1, :]
+        del raw, mm
 
         freq_mhz = _make_freq_axis_subband(
             index, n_chan_sub, cfg["freq_top_mhz"],
@@ -351,16 +365,20 @@ class VoltageReader:
                   f"expected for data taken before the 2026-03-27 band shift. "
                   f"Frequencies come from the config.")
 
-    def _check_stream_alignment(self) -> None:
+    def _check_stream_alignment(self, indices: list[int] | None = None) -> None:
         """Check that every stream present starts at the same OBS_OFFSET.
 
         The streams of one dump are byte-identical in OBS_OFFSET, so a
         mismatch means the timestamp prefix picked up different dumps in
         different stream directories — likely when one node's disk was too
-        full to write and a later trigger filled the gap.
+        full to write and a later trigger filled the gap. When indices is
+        given, only those streams are checked, so a bad stream outside a
+        sub-band selection cannot block the read.
         """
         offsets = {}
         for index, files in self._subband_files.items():
+            if indices is not None and index not in indices:
+                continue
             header = parse_dada_header(files[0])
             offset = _int_or_none(header.get("OBS_OFFSET"))
             if offset is not None:
@@ -380,16 +398,17 @@ class VoltageReader:
 
     def _read_stream_subband(
         self, index: int, n_time: int | None, snaps: list[int], verbose: bool,
-        allow_gaps: bool = False,
+        allow_gaps: bool = False, time_offset: int = 0,
     ) -> tuple[dict, dict]:
         """Read one stream sub-band, stitching the files of the dump in time.
 
         Files are taken in OBS_OFFSET order and treated as one timeline, so
-        n_time counts from the start of the dump. OBS_OFFSET is bytes since
-        UTC_START, so the files of one dump run end to end; a nonzero gap (or
-        overlap) means the prefix matched more than one dump, which raises
-        unless allow_gaps=True. Returns (voltages, header) with the header
-        from the first file.
+        time_offset and n_time count from the start of the dump, across the
+        files it is split into. OBS_OFFSET is bytes since UTC_START, so the
+        files of one dump run end to end; a nonzero gap (or overlap) means
+        the prefix matched more than one dump, which raises unless
+        allow_gaps=True. Returns (voltages, header) with the header from the
+        first file.
         """
         cfg = self._cfg
         n_chan_sub = cfg["n_chan_per_subband"]
@@ -430,19 +449,24 @@ class VoltageReader:
             layouts.append((filename, header, bytes_per_time, n_time_file))
 
         n_time_total = sum(lay[3] for lay in layouts)
+        available = max(n_time_total - time_offset, 0)
         if n_time is None:
-            n_time = n_time_total
+            n_time = available
         else:
-            n_time = min(n_time, n_time_total)
+            n_time = min(n_time, available)
 
         voltages = {
             s: np.empty((n_time, n_chan_sub, n_adc), dtype=np.complex64)
             for s in snaps
         }
 
+        skip = time_offset
         t0 = 0
         for filename, header, bytes_per_time, n_time_file in layouts:
-            take = min(n_time_file, n_time - t0)
+            if skip >= n_time_file:
+                skip -= n_time_file
+                continue
+            take = min(n_time_file - skip, n_time - t0)
             if take <= 0:
                 break
             n_snaps_file = bytes_per_time // (n_chan_sub * n_adc)
@@ -454,20 +478,28 @@ class VoltageReader:
                 )
             if verbose:
                 print(f"Reading {filename}")
-                print(f"  n_time={take} / {n_time_file}, SNAPs={snaps}")
+                print(f"  n_time={take} / {n_time_file} (offset {skip}), "
+                      f"SNAPs={snaps}")
 
-            with open(filename, "rb") as f:
-                f.seek(HEADER_SIZE)
-                raw = np.frombuffer(f.read(take * bytes_per_time), dtype=np.uint8)
-            raw = raw.reshape(take, n_snaps_file, n_chan_sub, n_adc)
+            # Memmap so only the [skip:skip+take] slice — and, page-wise,
+            # only the requested SNAP slots — is read from disk. The shape
+            # covers exactly the valid payload (_file_time_layout already
+            # respects DUMP_BYTES), so zero padding past it stays unmapped.
+            mm = np.memmap(
+                filename, dtype=np.uint8, mode="r", offset=HEADER_SIZE,
+                shape=(n_time_file, n_snaps_file, n_chan_sub, n_adc),
+            )
+            raw = mm[skip:skip + take]
 
             for s in snaps:
                 voltages[s][t0:t0 + take] = unpack_4bit(raw[:, s, :, :])
+            del raw, mm
+            skip = 0
             t0 += take
 
         if verbose:
             print(f"  Stream {index}: n_time={n_time} / {n_time_total} "
-                  f"from {len(layouts)} file(s)")
+                  f"(offset {time_offset}) from {len(layouts)} file(s)")
 
         return voltages, layouts[0][1]
 
@@ -480,24 +512,28 @@ class VoltageReader:
         trust_header: bool = False,
         verbose: bool = True,
         allow_gaps: bool = False,
+        subbands: list[int] | None = None,
+        time_offset: int = 0,
     ) -> dict:
         """
-        Read all subbands and stitch into full band.
+        Read all subbands (or a contiguous selection) and stitch them.
 
-        The legacy layout needs all 3 subbands. A stream dump can be missing
-        streams (only the streams around the trigger are written), and those
-        sub-bands are zero-filled with a warning (their indices come back in
-        `filled_subbands`); only a dump with no data at all raises. The
-        streams that are present must start at the same OBS_OFFSET, otherwise
-        they are not the same dump and the read raises.
+        The legacy layout needs all selected subbands on disk. A stream dump
+        can be missing streams (only the streams around the trigger are
+        written), and those sub-bands are zero-filled with a warning (their
+        indices come back in `filled_subbands`); only a selection with no
+        data at all raises. The streams that are present must start at the
+        same OBS_OFFSET, otherwise they are not the same dump and the read
+        raises — streams outside the selection are not checked.
 
         Parameters
         ----------
         antenna_csv : str, optional
             Path to antenna mapping CSV. If provided, extracts per-antenna
-            voltages as (n_time, 3072, n_ant).
+            voltages as (n_time, n_chan, n_ant).
         n_time : int, optional
-            Time samples to read per subband. None = all.
+            Time samples to read per subband, counted after time_offset.
+            None = all.
         snaps : list of int, optional
             SNAP indices to extract. Default: active_snaps from config.
         freq_order : str
@@ -509,24 +545,34 @@ class VoltageReader:
         allow_gaps : bool
             Stitch across a discontinuity in OBS_OFFSET within a stream
             instead of raising. See read_subband().
+        subbands : list of int, optional
+            Sub-band (stream) indices to read, e.g. [0, 1]. Must be
+            contiguous and ascending so the stitched frequency axis has no
+            holes. Default: all of them.
+        time_offset : int
+            Time samples to skip from the start of the dump before reading.
+            Reads clip at the end of the dump. Lets a long dump be read in
+            gulps so it never sits in memory whole.
 
         Returns
         -------
         dict with keys:
             voltages : np.ndarray or dict
-                If antenna_csv: (n_time, 3072, n_ant) complex64.
-                If not: {snap_id: (n_time, 3072, n_adc) complex64}.
+                If antenna_csv: (n_time, n_chan, n_ant) complex64.
+                If not: {snap_id: (n_time, n_chan, n_adc) complex64}.
+                n_chan is 3072 for the full band, 512 per selected sub-band
+                otherwise.
             header : dict
                 Header from first subband file.
             freq_mhz : np.ndarray
-                Full 3072-channel frequency axis.
+                Frequency axis for the selected sub-bands.
             utc_start : str
                 UTC_START from header.
             antenna_df : pd.DataFrame or None
                 Antenna mapping if csv was provided.
             filled_subbands : list of int
-                Sub-band indices that were zero-filled because no data was
-                found for them.
+                Sub-band indices (within the selection) that were
+                zero-filled because no data was found for them.
         """
         cfg = self._cfg
         subband_dirs = cfg["subband_dirs"]
@@ -538,36 +584,52 @@ class VoltageReader:
         n_chan_sub = cfg["n_chan_per_subband"]
         n_adc = cfg["n_adc_per_snap"]
 
+        if subbands is None:
+            sel = list(range(n_subbands))
+        else:
+            sel = [int(i) for i in subbands]
+            if not sel or sel != list(range(sel[0], sel[-1] + 1)):
+                raise ValueError(
+                    f"subbands must be contiguous and ascending, e.g. [1, 2]; "
+                    f"got {subbands}"
+                )
+            if sel[0] < 0 or sel[-1] >= n_subbands:
+                raise ValueError(
+                    f"subbands must be within 0-{n_subbands - 1}; got {subbands}"
+                )
+
         if self._stream_layout:
             # Only the streams around the trigger are written
-            if not self._subband_files:
+            if not any(i in self._subband_files for i in sel):
                 raise FileNotFoundError(
-                    f"No stream data for {self._timestamp} in {self._data_dir}"
+                    f"No stream data for {self._timestamp} in {self._data_dir} "
+                    f"(sub-bands {sel})"
                 )
-            self._check_stream_alignment()
+            self._check_stream_alignment(indices=sel)
         else:
-            # Require all 3 subbands
-            for i in range(n_subbands):
+            # Require every selected subband
+            for i in sel:
                 if i not in self._subband_files:
                     raise FileNotFoundError(
                         f"Subband directory not found for index {i} "
                         f"({subband_dirs[i]})"
                     )
 
-        # Read each subband
-        sub_voltages = [None] * n_subbands
+        # Read each selected subband
+        sub_voltages = {i: None for i in sel}
         first_header = None
         utc_start = "unknown"
 
-        for i in range(n_subbands):
+        for k, i in enumerate(sel):
             if verbose:
-                print_progress(i + 1, n_subbands, prefix="Reading subbands")
+                print_progress(k + 1, len(sel), prefix="Reading subbands")
             if i not in self._subband_files:
                 continue
             result = self.read_subband(
                 i, n_time=n_time, snaps=snaps,
                 freq_order=freq_order, trust_header=trust_header,
                 verbose=verbose, allow_gaps=allow_gaps,
+                time_offset=time_offset,
             )
             if first_header is None:
                 first_header = result["header"]
@@ -575,13 +637,13 @@ class VoltageReader:
             sub_voltages[i] = result["voltages"]
 
         # Zero-fill the sub-bands with no data (stream layout only — the
-        # legacy check above already required all 3) and trim the rest to the
-        # shortest one so they stitch
+        # legacy check above already required all selected) and trim the rest
+        # to the shortest one so they stitch
         n_time_read = min(
-            v[snaps[0]].shape[0] for v in sub_voltages if v is not None
+            v[snaps[0]].shape[0] for v in sub_voltages.values() if v is not None
         )
         filled_subbands = []
-        for i in range(n_subbands):
+        for i in sel:
             if sub_voltages[i] is None:
                 filled_subbands.append(i)
                 print(f"  WARNING: no data for sub-band {i} "
@@ -602,22 +664,24 @@ class VoltageReader:
         # Stitch along frequency axis. Each sub-band is already reversed
         # internally for ascending order; the sub-band ORDER also flips, so
         # the lowest one comes first.
-        order = sub_voltages[::-1] if freq_order == "ascending" else sub_voltages
+        order = sel[::-1] if freq_order == "ascending" else sel
         voltages_stitched = {}
         for s in snaps:
             voltages_stitched[s] = np.concatenate(
-                [sub[s] for sub in order], axis=1
+                [sub_voltages[i][s] for i in order], axis=1
             )
 
             if verbose:
                 print(f"\nSNAP {s} stitched: shape={voltages_stitched[s].shape}, "
                       f"mean_power={np.mean(np.abs(voltages_stitched[s]) ** 2):.3f}")
 
-        # Build full frequency axis
-        n_chan_total = cfg["n_chan_total"]
+        # Build the frequency axis for the selected sub-bands: a contiguous
+        # slice of the full descending axis
         freq_top = cfg["freq_top_mhz"]
         chan_bw = cfg["chan_bw_mhz"]
-        freq_desc = freq_top - chan_bw * np.arange(n_chan_total, dtype=np.float64)
+        chan_lo = sel[0] * n_chan_sub
+        chan_hi = (sel[-1] + 1) * n_chan_sub
+        freq_desc = freq_top - chan_bw * np.arange(chan_lo, chan_hi, dtype=np.float64)
         if freq_order == "ascending":
             freq_mhz = freq_desc[::-1].copy()
         else:
@@ -625,7 +689,7 @@ class VoltageReader:
 
         if verbose:
             print(f"\nFrequency axis: {freq_mhz[0]:.3f} – {freq_mhz[-1]:.3f} MHz "
-                  f"({n_chan_total} channels, {freq_order})")
+                  f"({chan_hi - chan_lo} channels, {freq_order})")
             print(f"UTC_START: {utc_start}")
 
         # Extract per-antenna voltages if CSV provided

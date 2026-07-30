@@ -559,3 +559,226 @@ class TestStreamHeaderCrossCheck:
         reader = VoltageReader(data_dir, timestamp)
         reader._check_stream_header(1, "x.dada", {"STREAM_SUBBAND_ID": "4"})
         assert "STREAM_SUBBAND_ID 4" in capsys.readouterr().out
+
+
+class TestTimeOffset:
+    def test_offset_within_first_file(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        v = reader.read_subband(
+            0, n_time=1, snaps=[0], verbose=False, time_offset=2,
+        )["voltages"][0]
+        assert v.shape[0] == 1
+        assert np.all(v.real == 2)
+
+    def test_offset_spans_file_boundary(self, synthetic_stream_dump):
+        """Stream 0 splits at sample 4; a read over the seam must stay continuous."""
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        split = cfg["n_time_split"]
+        v = reader.read_subband(
+            0, n_time=2, snaps=[0], verbose=False, time_offset=split - 1,
+        )["voltages"][0]
+        np.testing.assert_array_equal(
+            v[:, 0, 0].real, [split - 1, split]
+        )
+
+    def test_offset_at_file_boundary(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        split = cfg["n_time_split"]
+        v = reader.read_subband(
+            0, n_time=2, snaps=[0], verbose=False, time_offset=split,
+        )["voltages"][0]
+        np.testing.assert_array_equal(v[:, 0, 0].real, [split, split + 1])
+
+    def test_offset_inside_second_file(self, synthetic_stream_dump):
+        """n_time=None reads whatever remains after the offset."""
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        offset = cfg["n_time_split"] + 1
+        v = reader.read_subband(
+            0, snaps=[0], verbose=False, time_offset=offset,
+        )["voltages"][0]
+        assert v.shape[0] == cfg["n_time"] - offset
+        np.testing.assert_array_equal(
+            v[:, 0, 0].real, np.arange(offset, cfg["n_time"])
+        )
+
+    def test_offset_past_end_clips_to_zero(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        v = reader.read_subband(
+            0, snaps=[0], verbose=False, time_offset=100,
+        )["voltages"][0]
+        assert v.shape == (0, cfg["n_chan"], cfg["n_adc"])
+
+    def test_negative_offset_raises(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="time_offset"):
+            reader.read_subband(0, snaps=[0], verbose=False, time_offset=-1)
+
+    def test_offset_zero_matches_default(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        default = reader.read_subband(0, snaps=[0], verbose=False)
+        explicit = reader.read_subband(
+            0, snaps=[0], verbose=False, time_offset=0,
+        )
+        np.testing.assert_array_equal(
+            default["voltages"][0], explicit["voltages"][0]
+        )
+
+    def test_gulps_concatenate_to_full_read(self, synthetic_stream_dump):
+        """Reading in gulps must reproduce the single full-band read exactly."""
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        full = reader.read_full_band(snaps=[0], verbose=False)["voltages"][0]
+
+        gulp = 3
+        parts = []
+        for offset in range(0, cfg["n_time"], gulp):
+            res = reader.read_full_band(
+                snaps=[0], n_time=gulp, time_offset=offset, verbose=False,
+            )
+            parts.append(res["voltages"][0])
+        np.testing.assert_array_equal(np.concatenate(parts, axis=0), full)
+
+    def test_offset_full_band(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        v = reader.read_full_band(
+            snaps=[0], n_time=2, time_offset=2, verbose=False,
+        )["voltages"][0]
+        assert v.shape == (2, 3072, cfg["n_adc"])
+        # Present streams carry the offset time ramp; missing ones are zeros
+        np.testing.assert_array_equal(v[:, 0, 0].real, [2, 3])
+
+    def test_offset_legacy_layout(self, synthetic_dada_file):
+        """Legacy single-file layout honours the offset too."""
+        fpath, _, raw, cfg = synthetic_dada_file
+        data_dir = str(fpath).rsplit("/chan0_1023/", 1)[0]
+        reader = VoltageReader(data_dir, "2026-02-17-21:10:43")
+        v = reader.read_subband(
+            0, snaps=[0], verbose=False, time_offset=2,
+        )["voltages"][0]
+        assert v.shape[0] == cfg["n_time"] - 2
+        np.testing.assert_array_equal(v, unpack_4bit(raw[2:, 0, :, :]))
+
+
+class TestSubbandSelection:
+    def test_subset_shapes_and_freq(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_full_band(
+            snaps=[0], subbands=[0, 1], verbose=False,
+        )
+        v = result["voltages"][0]
+        assert v.shape == (cfg["n_time"], 1024, cfg["n_adc"])
+        assert np.all(v[:, :512, :].imag == 0)
+        assert np.all(v[:, 512:, :].imag == 1)
+        freq = result["freq_mhz"]
+        assert freq.shape == (1024,)
+        assert freq[0] == pytest.approx(FREQ_TOP_STREAM)
+        assert freq[-1] == pytest.approx(FREQ_TOP_STREAM - 1023 * CHAN_BW)
+
+    def test_single_subband_freq_offset(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_full_band(
+            snaps=[0], subbands=[3], verbose=False,
+        )
+        assert result["voltages"][0].shape[1] == 512
+        assert result["freq_mhz"][0] == pytest.approx(
+            FREQ_TOP_STREAM - 3 * 512 * CHAN_BW
+        )
+        assert np.all(result["voltages"][0].imag == 3)
+
+    def test_filled_only_within_selection(self, synthetic_stream_dump):
+        """Stream 2 is missing; streams outside the selection are not filled."""
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_full_band(
+            snaps=[0], subbands=[1, 2], verbose=False,
+        )
+        assert result.filled_subbands == [2]
+        v = result["voltages"][0]
+        assert np.all(v[:, :512, :].imag == 1)
+        assert np.all(v[:, 512:, :] == 0)
+
+    def test_gap_selection_raises(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="contiguous"):
+            reader.read_full_band(snaps=[0], subbands=[0, 2], verbose=False)
+
+    def test_unsorted_selection_raises(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="contiguous"):
+            reader.read_full_band(snaps=[0], subbands=[1, 0], verbose=False)
+
+    def test_empty_selection_raises(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="contiguous"):
+            reader.read_full_band(snaps=[0], subbands=[], verbose=False)
+
+    def test_out_of_range_selection_raises(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="within 0-5"):
+            reader.read_full_band(snaps=[0], subbands=[5, 6], verbose=False)
+
+    def test_selection_with_no_data_raises(self, synthetic_stream_dump):
+        """Streams 4 and 5 have no files; selecting only them must raise."""
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(FileNotFoundError, match="No stream data"):
+            reader.read_full_band(snaps=[0], subbands=[4, 5], verbose=False)
+
+    def test_subset_with_csv(self, synthetic_stream_dump, tmp_path):
+        import pandas as pd
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        csv = tmp_path / "two_ants.csv"
+        pd.DataFrame({
+            "antenna_id": [1, 2],
+            "snap_id": [0, 0],
+            "adc": [0, 3],
+            "packet_index": [0, 3],
+        }).to_csv(csv, index=False)
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_full_band(
+            antenna_csv=str(csv), snaps=[0], subbands=[1], verbose=False,
+        )
+        assert result.voltages.shape == (cfg["n_time"], 512, 2)
+        assert np.all(result.voltages.imag == 1)
+
+    def test_ascending_subset(self, synthetic_stream_dump):
+        """Ascending order flips the selected sub-bands too."""
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        result = reader.read_full_band(
+            snaps=[0], subbands=[0, 1], freq_order="ascending", verbose=False,
+        )
+        v = result["voltages"][0]
+        assert np.all(v[:, :512, :].imag == 1)
+        assert np.all(v[:, 512:, :].imag == 0)
+        freq = result["freq_mhz"]
+        assert np.all(np.diff(freq) > 0)
+        assert freq[-1] == pytest.approx(FREQ_TOP_STREAM)
+
+    def test_misaligned_stream_outside_selection_skipped(
+        self, synthetic_stream_dump_misaligned,
+    ):
+        """A bad stream outside the selection cannot block the read."""
+        data_dir, timestamp, offsets, cfg = synthetic_stream_dump_misaligned
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="do not start at the same time"):
+            reader.read_full_band(snaps=[0], subbands=[0, 1], verbose=False)
+
+        result = reader.read_full_band(snaps=[0], subbands=[0], verbose=False)
+        v = result["voltages"][0]
+        assert v.shape == (cfg["n_time"], 512, cfg["n_adc"])
+        assert np.all(v.imag == 0)
