@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-"""Dump CASM voltages, read them back, and correlate them.
+"""Dump CASM voltages and read them back.
+
+This script is the worked example of reading voltage dumps: trigger a
+dump, gather it onto one node, and walk it gulp by gulp. What you do with
+each gulp is up to you — the --correlate path below forms visibilities as
+one example of processing that accumulates across gulps; copy the loop and
+put your own code where the einsum is.
 
 Quickstart (on casm-corr1, from the offline venv):
 
@@ -44,9 +50,10 @@ in CSV row order instead. --streams 0,1 reads only those sub-bands
 gulps sized to the RAM currently free (override with --gulp seconds), so
 the full voltage array never exists in memory.
 
-Forming visibilities from the voltages is optional: add --correlate (or
+Forming visibilities is optional and just an example: add --correlate (or
 --out file.npz, which implies it) to multiply the inputs pairwise and
 average over --tint; only the visibilities then accumulate across gulps.
+By default the script only reads, prints what it found, and exits.
 """
 
 import argparse
