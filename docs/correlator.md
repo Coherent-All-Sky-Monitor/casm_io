@@ -175,7 +175,7 @@ Built-in formats:
 | `layout_32ant` | 64 (32 ant x 2 pol) | ~0.54 s | 34.36 s |
 | `layout_64ant` | 128 (64 ant x 2 pol) | ~1.07 s | 137.44 s |
 
-Both formats cover 3072 channels spanning approximately 375-469 MHz (exact top frequency reads from the file header; see band-shift note below).
+Both formats cover 3072 channels: `layout_32ant` spans 468.75-375.03 MHz, `layout_64ant` 484.375-390.66 MHz after the 2026-03-27 band shift. The exact top frequency reads from the file header where one is present; see the band-shift note below.
 
 `VisibilityFormat` fields: `nsig`, `nchan`, `dt_raw_s`, `ntime_per_file`, `chan_bw_mhz`, `freq_top_mhz`, `freq_bottom_mhz`, `n_baselines`, `file_duration_s`.
 
@@ -240,7 +240,7 @@ Pass `verbose=False` to silence all output.
 
 **Headerless old files**: `VisibilityReader` raises `ValueError` if there is no 4096-byte file header and no `fmt` argument. Pass `fmt=load_format("layout_64ant")` for files written before 2026-03-04.
 
-**Band shift 2026-03-27**: the correlator center frequency shifted from 468.75 MHz to 484.375 MHz. For post-shift files, the reader reads `FREQ_START` from the file header and overrides `fmt.freq_top_mhz` automatically. If you pass an explicit `fmt` that disagrees with the header, you get a warning and the header value wins.
+**Band shift 2026-03-27**: the top of the correlator band shifted from 468.75 MHz to 484.375 MHz (voltage dumps shifted with it). For post-shift files, the reader reads `FREQ_START` from the file header and overrides `fmt.freq_top_mhz` automatically. If you pass an explicit `fmt` that disagrees with the header, you get a warning and the header value wins.
 
 **`channels` and `freq_range_mhz` are mutually exclusive**. Passing both raises `ValueError`.
 

@@ -85,15 +85,30 @@ See [docs/antenna_mapping.md](docs/antenna_mapping.md) for CSV schema details an
 
 ## Voltage DADA files
 
+Triggered dumps (`casm-voltage-dump`, in casm_t2) land in
+`/mnt/nvme4/data/casm/cand_dumps/stream_{0..5}/`, 512 channels per stream.
+
 ```python
 from casm_io import VoltageReader
 
-reader = VoltageReader("/mnt/nvme3/data/casm/voltage_dumps", "2026-02-17-21:10:43")
-result = reader.read_full_band(antenna_csv="/path/to/antenna_layout.csv")
-print(result.voltages.shape)   # (ntime, 3072, 16) complex64
+# Timestamp is a filename prefix: UTC_START, plus OBS_OFFSET when several
+# dumps share a start time
+reader = VoltageReader("/mnt/nvme4/data/casm/cand_dumps",
+                       "2026-07-29-21:06:34_0166501757706240")
+result = reader.read_full_band(
+    antenna_csv="/home/casm/software/dev/antenna_layouts/current",
+    n_time=30518,                     # 1 s at 32.768 us
+)
+print(result.voltages.shape)          # (30518, 3072, n_ant) complex64
+print(result.freq_mhz[[0, -1]])       # [484.375, 390.656], descending
+print(result.filled_subbands)         # streams with no data on disk (zero-filled)
 ```
 
-See [docs/voltage.md](docs/voltage.md).
+Legacy pre-March-2026 dumps (`/mnt/nvme3/data/casm/voltage_dumps`, three
+1024-channel `chan*` directories, 468.75 -> 375.03 MHz) read the same way —
+`VoltageReader` picks the layout from the subdirectories it finds. See
+[docs/voltage.md](docs/voltage.md) and the end-to-end walkthrough in
+[examples/voltage_dumps.py](examples/voltage_dumps.py).
 
 ## Filterbank files
 

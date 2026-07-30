@@ -63,12 +63,13 @@ k = i·n − i·(i−1)/2 + (j − i)      # casm_io.correlator.baselines.triu_f
 | Native SNAP / correlator files | **descending** (band top first) |
 | Calibration NPZ/HDF5 (`casm_calibrator`) | ascending (`bf_weights_generator` auto-flips) |
 | int8 weight HDF5 (deployed) | **descending** (native SNAP order — do not add `[::-1]`) |
-| Band, data before 2026-03-27 | 375 → 468.75 MHz top |
-| Band, current (`layout_64ant`) | top 484.375 MHz (shifted 2026-03-27) |
+| Band, data before 2026-03-27 | 468.75 → 375.03 MHz (top first) |
+| Band, current (shifted 2026-03-27) | 484.375 → 390.66 MHz; `layout_64ant` and voltage stream dumps alike |
 | Channel width | 125/4096 = 0.030517578125 MHz, 3072 channels |
 
 Never hardcode band edges: take the frequency axis from
-`casm_io.correlator.load_format(...)` / the file header. The legacy constants
+`casm_io.correlator.load_format(...)` / the file header, or from
+`result.freq_mhz` for voltage dumps. The legacy constants
 in `casm_io.constants` (`FREQ_TOP_MHZ = 468.75`) apply only to pre-March-2026
 data.
 

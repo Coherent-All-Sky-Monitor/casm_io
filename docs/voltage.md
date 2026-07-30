@@ -1,53 +1,60 @@
 # Voltage DADA Files
 
-## Reading a full voltage dump
+Two layouts exist on disk: triggered dumps written to per-stream directories
+(current), and the legacy three-subband dumps from before March 2026.
+`VoltageReader` picks the layout from the subdirectories it finds, so the calls
+are identical. [examples/voltage_dumps.py](../examples/voltage_dumps.py) is the
+end-to-end walkthrough: trigger a dump, read it back, form visibilities.
+
+## Reading a triggered dump
+
+Triggered dumps are made with `casm-voltage-dump` (lives in casm_t2) and land in
+`/mnt/nvme4/data/casm/cand_dumps/stream_0 ... stream_5` — six sub-bands of 512
+channels, frequency descending, stream 0 at the top of the band. Files are named
+`<UTC_START>_<OBS_OFFSET>.<filenum>.dada`.
 
 ```python
 from casm_io import VoltageReader
 
-reader = VoltageReader("/mnt/nvme3/data/casm/voltage_dumps", "2026-02-17-21:10:43")
-print(reader.subbands_found)  # [0, 1, 2]
+reader = VoltageReader("/mnt/nvme4/data/casm/cand_dumps",
+                       "2026-07-29-21:06:34_0166501757706240")
+print(reader.subbands_found)      # [0, 1, 2, 3, 4, 5]
 
-# Read all 3 subbands, stitch to full band, extract per-antenna
+# Stitch all streams to the full band and extract per-antenna
 result = reader.read_full_band(
-    antenna_csv="/path/to/antenna_layout.csv",
-    freq_order='ascending',
-    n_time=1000,
+    antenna_csv="/home/casm/software/dev/antenna_layouts/current",
+    n_time=30518,                 # 1 s at TSAMP = 32.768 us
 )
-print(result.voltages.shape)      # (1000, 3072, 16) complex64
-print(result.freq_mhz[[0, -1]])   # [375.000, 468.719]
-print(result.utc_start)            # '2026-02-17-21:10:43'
-print(result.antenna_df.head())    # antenna mapping DataFrame
+print(result.voltages.shape)      # (30518, 3072, n_ant) complex64, n_ant = CSV rows
+print(result.freq_mhz[[0, -1]])   # [484.375, 390.656] — descending, band shifted 2026-03-27
+print(result.utc_start)           # '2026-07-29-21:06:34'
+print(result.antenna_df.head())   # antenna mapping DataFrame, one row per output antenna
 ```
 
 Every CSV row is bounds-checked against the layout before extraction: `snap_id`
 and `adc` outside the hardware range raise, naming the row, rather than silently
-handing back a different antenna.
+handing back a different antenna. An antenna whose SNAP was not read comes back
+as zeros with a message.
 
-## Triggered dumps (stream_0 ... stream_5)
-
-Triggered dumps use per-stream directories with 512 channels each instead of the
-three 1024-channel `chan*` directories. `VoltageReader` picks the layout from the
-subdirectories it finds, so the calls are the same:
+Without `antenna_csv` you get the raw layout: `{snap_id: (n_time, 3072, 12)}`,
+12 being the ADC inputs on a SNAP board. `snaps=` picks which SNAP slots to
+unpack — the config's `active_snaps` by default, which is all 11 SNAP slots for
+stream dumps and `[0, 2, 4]` for the legacy layout.
 
 ```python
-reader = VoltageReader("/mnt/nvme3/data/casm/cand_dumps", "2026-03-16-00:30:11")
-print(reader.subbands_found)  # [0, 1, 2] — streams 3-5 weren't written
-
 result = reader.read_full_band(n_time=1000, snaps=[0, 2, 4])
-print(result.voltages[0].shape)   # (1000, 3072, 12)
+print(result.voltages[0].shape)   # (1000, 3072, 12) — SNAP 0
 ```
 
-Streams that weren't written are zero-filled with a warning; the read only fails
-if no stream has data. Their indices come back in `result.filled_subbands`, so a
-script can record which part of the band is zeros:
+Only the streams around the trigger are written. Streams with no data are
+zero-filled with a warning; the read fails only if no stream has data at all.
+Their indices come back in `result.filled_subbands`, so a script can record which
+part of the band is zeros:
 
 ```python
 if result.filled_subbands:
     print(f"no data for streams {result.filled_subbands} — zeros")
 ```
-
-Stream 0 is the top of the band, as with the legacy layout.
 
 The streams of one dump carry the same `OBS_OFFSET` in their first file. If they
 don't, the timestamp prefix has picked up different dumps in different stream
@@ -55,13 +62,12 @@ directories and `read_full_band()` raises, naming the streams and their offsets.
 
 A dump longer than about 10 seconds is split over several files. They are found
 by timestamp prefix, ordered by the `OBS_OFFSET` in the filename and read as one
-timeline, so `n_time` counts from the start of the dump. Files sharing a
-UTC_START can be separate dumps, so when consecutive files don't run end to end
-the read raises with the size of the gap. Extend the timestamp with the offset
-to pick one dump:
+timeline, so `n_time` counts from the start of the dump. Several dumps can share
+a `UTC_START`, so when consecutive files don't run end to end the read raises
+with the size of the gap. The full `UTC_START_OBSOFFSET` prefix selects one dump:
 
 ```python
-reader = VoltageReader(dump_dir, "2026-03-16-00:30:11_0000044756219904")
+reader = VoltageReader(dump_dir, "2026-07-29-21:06:34_0166501757706240")
 ```
 
 Pass `allow_gaps=True` to `read_subband()` or `read_full_band()` to stitch across
@@ -70,6 +76,27 @@ not contiguous in time.
 
 Pass `config=` (a path to a JSON format config, or a dict) to override the layout
 choice.
+
+## Legacy dumps (before March 2026)
+
+Pre-band-shift dumps live in `/mnt/nvme3/data/casm/voltage_dumps` as three
+1024-channel directories (`chan0_1023`, `chan1024_2047`, `chan2048_3071`)
+covering 468.75 -> 375.03 MHz. All three subbands must be present; unlike the
+stream layout, a missing one raises.
+
+```python
+reader = VoltageReader("/mnt/nvme3/data/casm/voltage_dumps", "2026-02-17-21:10:43")
+print(reader.subbands_found)      # [0, 1, 2]
+
+result = reader.read_full_band(
+    antenna_csv="/path/to/antenna_layout.csv",
+    freq_order='ascending',
+    n_time=1000,
+)
+print(result.voltages.shape)      # (1000, 3072, n_ant) complex64
+print(result.freq_mhz[[0, -1]])   # [375.031, 468.750]
+print(result.utc_start)           # '2026-02-17-21:10:43'
+```
 
 ## Result attributes
 
@@ -90,7 +117,7 @@ choice.
 |-----------|------|-------------|
 | `voltages` | `dict` | `{snap_id: (n_time, n_chan_per_sub, n_adc) complex64}` |
 | `header` | `dict` | Parsed DADA header |
-| `freq_mhz` | `np.ndarray` | Frequency axis for this subband (1024 channels) |
+| `freq_mhz` | `np.ndarray` | Frequency axis for this subband (512 channels for a stream, 1024 for the legacy layout) |
 
 Both access styles work:
 
@@ -103,19 +130,24 @@ result['voltages']       # dict-style (backwards compatible)
 
 ```python
 result = reader.read_subband(0, n_time=100)
-print(result.voltages[0].shape)   # (100, 1024, 12) — SNAP 0 data
-print(result.freq_mhz.shape)      # (1024,)
+print(result.voltages[0].shape)    # (100, 512, 12) — SNAP 0, one stream
+print(result.freq_mhz[[0, -1]])    # [484.375, 468.781] for stream 0
 print(result.header['UTC_START'])  # header field access
 ```
+
+Legacy subbands are 1024 channels wide, so the same call returns `(100, 1024, 12)`.
 
 ## Verbosity and progress
 
 Reads show inline progress bars by default:
 
 ```
-  Reading subbands [===========>                  ] 1/3
-  Unpacking SNAPs  [==============================] 6/6
+  Reading subbands [==========>                   ] 2/6
+  Extracting antennas [=============>            ] 24/48
 ```
+
+The legacy layout also shows an `Unpacking SNAPs` bar; stream reads print one
+line per file instead, with the sample count taken from that file.
 
 Pass `verbose=False` to silence:
 
@@ -147,4 +179,9 @@ Default `trust_header=False` substitutes known-good defaults for unreliable head
 
 ## Frequency order
 
-Default `freq_order='descending'` (native 468.75 -> 375 MHz). Pass `'ascending'` to reverse.
+Default `freq_order='descending'`, the native order: 484.375 -> 390.656 MHz for
+dumps taken after the 2026-03-27 band shift, 468.75 -> 375.03 MHz for legacy
+dumps. Pass `'ascending'` to reverse. Either way the axis is built from the
+sub-band index and the format config, never from the header — `FREQ_START` is
+off-grid for stream 0, and `START_CHANNEL` is one sub-band width low for
+pre-shift data (the reader prints a note when it disagrees).
