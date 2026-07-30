@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 """Dump CASM voltages and read them back.
 
-This script is the worked example of reading voltage dumps: trigger a
-dump, gather it onto one node, and walk it gulp by gulp. What you do with
-each gulp is up to you — the --correlate path below forms visibilities as
-one example of processing that accumulates across gulps; copy the loop and
-put your own code where the einsum is.
+The reading is the point of this example: trigger a dump, gather it onto
+one node, and step through it in gulps. --correlate adds one worked
+reduction, visibilities accumulated per gulp, as a template for heavier
+processing.
 
 Quickstart (on casm-corr1, from the offline venv):
 
