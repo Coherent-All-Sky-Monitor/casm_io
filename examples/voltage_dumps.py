@@ -5,17 +5,19 @@
 Quickstart (on casm-corr1, from the offline venv):
 
     source /home/casm/software/dev/casm_venvs/casm_offline_env/bin/activate
-    casm-voltage-dump --last 2 --gather
-    python voltage_dumps.py /mnt/nvme4/data/casm/cand_dumps \\
+    casm-voltage-dump --last 2 --gather ~/myrun
+    python voltage_dumps.py ~/myrun \\
         2026-07-29-21:06:34_0187972821983232 --seconds 1
 
 The second argument is the dump's filename prefix,
-``<UTC_START>_<16-digit byte offset>`` as in the example above — --gather
-prints it ready-made at the end of its output, as part of the exact
-``VoltageReader(data_dir, prefix)`` call to use. --gather also waits for
-the dump files on both nodes and pulls the casm-corr2 streams over (rsync;
-local streams are symlinked when gathering into a different directory).
-The full prefix pins one dump even when several share a UTC_START, which
+``<UTC_START>_<16-digit byte offset>`` as in the example above. --gather is
+optional: it waits for the dump files on both nodes, pulls the casm-corr2
+streams into your directory (rsync; the local streams are symlinked, so
+they break if the originals in cand_dumps are deleted — copy them if the
+directory has to stand on its own), and prints the prefix ready-made as
+part of the exact ``VoltageReader(data_dir, prefix)`` call to use. Without
+it, scp the corr2 stream_N files over yourself and read the prefix off the
+filenames. The full prefix pins one dump even when several share a UTC_START, which
 otherwise has to be done by hand: filenames are
 ``<UTC_START>_<byte offset>.<file number>.dada`` (seconds since start =
 offset / 2.0625e9), long dumps split into ~10 s files, and the reader
