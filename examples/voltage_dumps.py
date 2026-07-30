@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 """Dump CASM voltages and read them back.
 
-The reading is the point of this example: trigger a dump, gather it onto
-one node, and step through it in gulps. --correlate adds one worked
-reduction, visibilities accumulated per gulp, as a template for heavier
-processing.
 
 Quickstart (on casm-corr1, from the offline venv):
 
