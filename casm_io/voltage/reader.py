@@ -51,8 +51,52 @@ from .header import parse_dada_header, HEADER_SIZE
 from .unpack import unpack_4bit
 from .._progress import print_progress
 from .._results import SubbandResult, FullBandResult
+from ..constants import TSAMP_S
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
+
+
+def mem_available_bytes() -> int | None:
+    """MemAvailable from /proc/meminfo, or None where that doesn't exist."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def default_gulp_samples(n_chan: int, n_inputs: int,
+                         mem_fraction: float = 0.2) -> int:
+    """Samples per gulp sized from the RAM free right now.
+
+    Unpacking costs 8 bytes of complex64 per sample-channel-input, and the
+    read path holds roughly two further working copies of a gulp, so a gulp
+    is budgeted at mem_fraction of MemAvailable / (24 bytes x channels x
+    inputs). Whatever the rest of the machine is using stays untouched —
+    only leftover memory is counted. Falls back to 1 s if MemAvailable is
+    unreadable.
+    """
+    avail = mem_available_bytes()
+    if avail is None:
+        return int(round(1.0 / TSAMP_S))
+    per_sample = n_chan * n_inputs * 8 * 3
+    return max(int(avail * mem_fraction / per_sample), 1)
+
+
+def _seconds_to_samples(n_time, time_offset, seconds, offset_seconds):
+    """Resolve the seconds-based read arguments against the sample-based ones."""
+    if seconds is not None:
+        if n_time is not None:
+            raise ValueError("give seconds or n_time, not both")
+        n_time = int(round(seconds / TSAMP_S))
+    if offset_seconds:
+        if time_offset:
+            raise ValueError("give offset_seconds or time_offset, not both")
+        time_offset = int(round(offset_seconds / TSAMP_S))
+    return n_time, time_offset
 
 
 def _load_dada_config(name: str = "dada_format.json") -> dict:
@@ -514,6 +558,8 @@ class VoltageReader:
         allow_gaps: bool = False,
         subbands: list[int] | None = None,
         time_offset: int = 0,
+        seconds: float | None = None,
+        offset_seconds: float = 0.0,
     ) -> dict:
         """
         Read all subbands (or a contiguous selection) and stitch them.
@@ -553,6 +599,11 @@ class VoltageReader:
             Time samples to skip from the start of the dump before reading.
             Reads clip at the end of the dump. Lets a long dump be read in
             gulps so it never sits in memory whole.
+        seconds : float, optional
+            The same as n_time, in seconds (one sample is 32.768 us).
+            Give one or the other.
+        offset_seconds : float
+            The same as time_offset, in seconds. Give one or the other.
 
         Returns
         -------
@@ -574,6 +625,9 @@ class VoltageReader:
                 Sub-band indices (within the selection) that were
                 zero-filled because no data was found for them.
         """
+        n_time, time_offset = _seconds_to_samples(
+            n_time, time_offset, seconds, offset_seconds,
+        )
         cfg = self._cfg
         subband_dirs = cfg["subband_dirs"]
 
@@ -757,3 +811,63 @@ class VoltageReader:
             antenna_df=None,
             filled_subbands=filled_subbands,
         )
+
+    def iter_full_band(
+        self,
+        seconds: float | None = None,
+        offset_seconds: float = 0.0,
+        gulp_seconds: float | None = None,
+        n_time: int | None = None,
+        time_offset: int = 0,
+        gulp_samples: int | None = None,
+        **read_kwargs,
+    ):
+        """Yield read_full_band() results in gulps, so a long dump can be
+        processed without ever holding it whole.
+
+        seconds/n_time bound the total read (None = the whole dump);
+        offset_seconds/time_offset set where it starts. The gulp defaults to
+        a size the RAM currently free can hold (default_gulp_samples).
+        Remaining keyword arguments (snaps, subbands, antenna_csv,
+        freq_order, ...) pass through to read_full_band; verbose defaults to
+        False here since a progress print per gulp rarely helps a loop.
+
+        >>> for chunk in reader.iter_full_band(seconds=10, snaps=[0]):
+        ...     process(chunk.voltages)
+        """
+        n_time, time_offset = _seconds_to_samples(
+            n_time, time_offset, seconds, offset_seconds,
+        )
+        if gulp_samples is None:
+            if gulp_seconds is not None:
+                gulp_samples = max(int(round(gulp_seconds / TSAMP_S)), 1)
+            else:
+                cfg = self._cfg
+                subbands = read_kwargs.get("subbands")
+                snaps = read_kwargs.get("snaps") or cfg["active_snaps"]
+                n_chan = (len(subbands) if subbands else cfg["n_subbands"]) \
+                    * cfg["n_chan_per_subband"]
+                gulp_samples = default_gulp_samples(
+                    n_chan, len(snaps) * cfg["n_adc_per_snap"],
+                )
+        read_kwargs.setdefault("verbose", False)
+
+        done = 0
+        while n_time is None or done < n_time:
+            gulp = gulp_samples
+            if n_time is not None:
+                gulp = min(gulp, n_time - done)
+            result = self.read_full_band(
+                n_time=gulp, time_offset=time_offset + done, **read_kwargs,
+            )
+            voltages = result.voltages
+            if isinstance(voltages, dict):
+                got = next(iter(voltages.values())).shape[0]
+            else:
+                got = voltages.shape[0]
+            if got == 0:
+                break
+            yield result
+            done += got
+            if got < gulp:
+                break

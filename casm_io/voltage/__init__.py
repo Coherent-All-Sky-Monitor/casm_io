@@ -10,9 +10,11 @@ stream_5).
 from .reader import VoltageReader
 from .header import parse_dada_header
 from .unpack import unpack_4bit
+from .correlate import correlate
 
 __all__ = [
     "VoltageReader",
     "parse_dada_header",
     "unpack_4bit",
+    "correlate",
 ]
