@@ -36,6 +36,7 @@ CHAN_BW_MHZ = 125.0 / 4096  # 0.030517578125 MHz
 
 # Timing
 TSAMP_US = 32.768  # Voltage dump sample time in microseconds
+TSAMP_S = TSAMP_US * 1e-6  # the same, in seconds
 
 # Speed of light
 C_LIGHT_M_S = 299792458.0

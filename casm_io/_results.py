@@ -42,6 +42,21 @@ class SubbandResult(_ResultBase):
 
 
 @dataclasses.dataclass
+class CorrelateResult(_ResultBase):
+    """Result from casm_io.voltage.correlate()."""
+    #: (n_bin, n_chan, n_input, n_input) complex64;
+    #: vis[t, f, i, j] = <v_i conj(v_j)> over integration bin t.
+    vis: np.ndarray
+    #: Bin-centre times in seconds from the start of the input array.
+    time_s: np.ndarray
+    #: Samples averaged per bin (1 = native 32.768 us resolution).
+    tint_samples: int
+    #: Input axis labels: (snap, adc) pairs when a snap dict was stacked,
+    #: None when the caller passed an array (its input order is kept).
+    inputs: list[tuple[int, int]] | None = None
+
+
+@dataclasses.dataclass
 class FullBandResult(_ResultBase):
     """Result from VoltageReader.read_full_band()."""
     voltages: np.ndarray | dict

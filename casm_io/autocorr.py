@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .voltage.reader import VoltageReader
+from .voltage.reader import (VoltageReader, default_gulp_samples,
+                             mem_available_bytes)
 from .correlator.reader import read_visibilities
 from .correlator.baselines import triu_flat_index
 from .correlator.mapping import AntennaMapping
@@ -39,36 +40,6 @@ def psrdada_to_unix(t: str) -> float | None:
         except (ValueError, TypeError):
             continue
     return None
-
-
-def mem_available_bytes() -> int | None:
-    """MemAvailable from /proc/meminfo, or None where that doesn't exist."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
-
-
-def default_gulp_samples(n_chan: int, n_inputs: int,
-                         mem_fraction: float = 0.2) -> int:
-    """Samples per gulp sized from the RAM free right now.
-
-    Unpacking costs 8 bytes of complex64 per sample-channel-input, and the
-    read path holds roughly two further working copies of a gulp, so a gulp
-    is budgeted at mem_fraction of MemAvailable / (24 bytes x channels x
-    inputs). The realtime system keeps whatever it is already using — only
-    leftover memory is counted. Falls back to 1 s if MemAvailable is
-    unreadable.
-    """
-    avail = mem_available_bytes()
-    if avail is None:
-        return int(round(1.0 / TSAMP_S))
-    per_sample = n_chan * n_inputs * 8 * 3
-    return max(int(avail * mem_fraction / per_sample), 1)
 
 
 def voltage_autocorr(

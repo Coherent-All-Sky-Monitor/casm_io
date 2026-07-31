@@ -782,3 +782,79 @@ class TestSubbandSelection:
         v = result["voltages"][0]
         assert v.shape == (cfg["n_time"], 512, cfg["n_adc"])
         assert np.all(v.imag == 0)
+
+
+class TestSecondsArguments:
+    def test_seconds_maps_to_samples(self, synthetic_stream_dump):
+        from casm_io.constants import TSAMP_S
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        by_samples = reader.read_full_band(n_time=3, snaps=[0], verbose=False)
+        by_seconds = reader.read_full_band(
+            seconds=3 * TSAMP_S, snaps=[0], verbose=False,
+        )
+        np.testing.assert_array_equal(
+            by_samples["voltages"][0], by_seconds["voltages"][0]
+        )
+
+    def test_offset_seconds_maps_to_samples(self, synthetic_stream_dump):
+        from casm_io.constants import TSAMP_S
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        a = reader.read_full_band(time_offset=2, snaps=[0], verbose=False)
+        b = reader.read_full_band(
+            offset_seconds=2 * TSAMP_S, snaps=[0], verbose=False,
+        )
+        np.testing.assert_array_equal(a["voltages"][0], b["voltages"][0])
+
+    def test_both_forms_raise(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        with pytest.raises(ValueError, match="not both"):
+            reader.read_full_band(n_time=1, seconds=1.0, snaps=[0], verbose=False)
+        with pytest.raises(ValueError, match="not both"):
+            reader.read_full_band(time_offset=1, offset_seconds=1.0,
+                                  snaps=[0], verbose=False)
+
+
+class TestIterFullBand:
+    def test_chunks_concatenate_to_full_read(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        full = reader.read_full_band(snaps=[0], verbose=False)["voltages"][0]
+        chunks = [c["voltages"][0] for c in
+                  reader.iter_full_band(gulp_samples=3, snaps=[0])]
+        assert len(chunks) == 3  # 7 samples in gulps of 3
+        np.testing.assert_array_equal(np.concatenate(chunks, axis=0), full)
+
+    def test_n_time_bounds_the_iteration(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        total = sum(c["voltages"][0].shape[0] for c in
+                    reader.iter_full_band(n_time=5, gulp_samples=2, snaps=[0]))
+        assert total == 5
+
+    def test_offset_and_kwargs_pass_through(self, synthetic_stream_dump):
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        chunks = list(reader.iter_full_band(
+            time_offset=5, gulp_samples=10, snaps=[0], subbands=[0, 1],
+        ))
+        assert len(chunks) == 1
+        v = chunks[0]["voltages"][0]
+        assert v.shape == (cfg["n_time"] - 5, 1024, cfg["n_adc"])
+        np.testing.assert_array_equal(v[:, 0, 0].real, [5, 6])
+
+    def test_stops_cleanly_past_the_end(self, synthetic_stream_dump):
+        data_dir, timestamp, _ = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        assert list(reader.iter_full_band(time_offset=100, gulp_samples=2,
+                                          snaps=[0])) == []
+
+    def test_default_gulp_comes_from_ram(self, synthetic_stream_dump):
+        """No gulp given: the whole 7-sample dump fits in one RAM-sized chunk."""
+        data_dir, timestamp, cfg = synthetic_stream_dump
+        reader = VoltageReader(data_dir, timestamp)
+        chunks = list(reader.iter_full_band(snaps=[0]))
+        assert len(chunks) == 1
+        assert chunks[0]["voltages"][0].shape[0] == cfg["n_time"]
