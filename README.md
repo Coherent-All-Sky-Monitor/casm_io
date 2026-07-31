@@ -86,10 +86,13 @@ See [docs/antenna_mapping.md](docs/antenna_mapping.md) for CSV schema details an
 ## Voltage DADA files
 
 Triggered dumps (`casm-voltage-dump`, in casm_t2) land in
-`/mnt/nvme4/data/casm/cand_dumps/stream_{0..5}/`, 512 channels per stream.
+`/mnt/nvme4/data/casm/cand_dumps/stream_{0..5}/`, 512 channels per stream;
+`--gather DIR` (or `dump_voltages(dir, past_duration=...)` from Python) pulls
+all six streams into a working directory and prints the reader call.
 
 ```python
 from casm_io import VoltageReader
+from casm_io.voltage import correlate
 
 # Timestamp is a filename prefix: UTC_START, plus OBS_OFFSET when several
 # dumps share a start time
@@ -97,18 +100,28 @@ reader = VoltageReader("/mnt/nvme4/data/casm/cand_dumps",
                        "2026-07-29-21:06:34_0166501757706240")
 result = reader.read_full_band(
     antenna_csv="/home/casm/software/dev/antenna_layouts/current",
-    n_time=30518,                     # 1 s at 32.768 us
+    seconds=1,                        # or n_time= samples; 1 s = 30518
 )
 print(result.voltages.shape)          # (30518, 3072, n_ant) complex64
 print(result.freq_mhz[[0, -1]])       # [484.375, 390.656], descending
 print(result.filled_subbands)         # streams with no data on disk (zero-filled)
+
+# subsets and gulps
+result = reader.read_full_band(subbands=[1, 2], snaps=[0, 3], seconds=0.5)
+for chunk in reader.iter_full_band(seconds=30):   # RAM-sized chunks
+    ...
+
+# optional: visibilities at native 32.768 us resolution or any integration
+out = correlate(result.voltages, tint_s=0.01)     # vis[t, f, i, j]
 ```
 
 Legacy pre-March-2026 dumps (`/mnt/nvme3/data/casm/voltage_dumps`, three
 1024-channel `chan*` directories, 468.75 -> 375.03 MHz) read the same way —
 `VoltageReader` picks the layout from the subdirectories it finds. See
-[docs/voltage.md](docs/voltage.md) and the end-to-end walkthrough in
-[examples/voltage_dumps.py](examples/voltage_dumps.py).
+[docs/voltage.md](docs/voltage.md), the notebook walkthrough in
+[examples/voltage_quickstart.ipynb](examples/voltage_quickstart.ipynb), and the
+batch script [examples/voltage_dumps.py](examples/voltage_dumps.py).
+`casm-autocorr` compares a dump's autocorrelations against the correlator's.
 
 ## Filterbank files
 

@@ -3,15 +3,21 @@
 Two layouts exist on disk: triggered dumps written to per-stream directories
 (current), and the legacy three-subband dumps from before March 2026.
 `VoltageReader` picks the layout from the subdirectories it finds, so the calls
-are identical. [examples/voltage_dumps.py](../examples/voltage_dumps.py) is the
-end-to-end walkthrough: trigger a dump, read it back, form visibilities.
+are identical. Two walkthroughs exist: the notebook
+[examples/voltage_quickstart.ipynb](../examples/voltage_quickstart.ipynb)
+(trigger from Python via casm_t2's `dump_voltages`, read, correlate) and the
+script [examples/voltage_dumps.py](../examples/voltage_dumps.py) for batch use.
+`casm-autocorr` compares a dump's autocorrelations against the correlator.
 
 ## Reading a triggered dump
 
 Triggered dumps are made with `casm-voltage-dump` (lives in casm_t2) and land in
 `/mnt/nvme4/data/casm/cand_dumps/stream_0 ... stream_5` — six sub-bands of 512
 channels, frequency descending, stream 0 at the top of the band. Files are named
-`<UTC_START>_<OBS_OFFSET>.<filenum>.dada`.
+`<UTC_START>_<OBS_OFFSET>.<filenum>.dada`. Add `--gather DIR` to pull all six
+streams into a working directory (the other node's by rsync, the local ones as
+symlinks) and print the reader call ready-made; `dump_voltages(dir,
+past_duration=...)` does the same from Python.
 
 ```python
 from casm_io import VoltageReader
@@ -23,7 +29,7 @@ print(reader.subbands_found)      # [0, 1, 2, 3, 4, 5]
 # Stitch all streams to the full band and extract per-antenna
 result = reader.read_full_band(
     antenna_csv="/home/casm/software/dev/antenna_layouts/current",
-    n_time=30518,                 # 1 s at TSAMP = 32.768 us
+    seconds=1,                    # or n_time=30518 samples at TSAMP = 32.768 us
 )
 print(result.voltages.shape)      # (30518, 3072, n_ant) complex64, n_ant = CSV rows
 print(result.freq_mhz[[0, -1]])   # [484.375, 390.656] — descending, band shifted 2026-03-27
@@ -44,6 +50,42 @@ stream dumps and `[0, 2, 4]` for the legacy layout.
 ```python
 result = reader.read_full_band(n_time=1000, snaps=[0, 2, 4])
 print(result.voltages[0].shape)   # (1000, 3072, 12) — SNAP 0
+```
+
+`subbands=` reads only some streams (the selection must be contiguous so the
+stitched frequency axis has no hole), and `time_offset=` / `offset_seconds=`
+start the read inside the dump. Reads go through `np.memmap`, so only the
+requested samples and SNAP slots are pulled off disk:
+
+```python
+result = reader.read_full_band(subbands=[1, 2], seconds=0.5, offset_seconds=1.0)
+print(result.voltages[0].shape)   # (15259, 1024, 12) — 468.75-437.53 MHz
+```
+
+For dumps too long to unpack in memory at once (complex64 is 8x the disk
+size), `iter_full_band()` yields the same reads in RAM-sized chunks — the
+gulp defaults to a fraction of the memory currently free:
+
+```python
+for chunk in reader.iter_full_band(seconds=30, snaps=[0]):
+    accumulate(chunk.voltages)    # each chunk is a FullBandResult
+```
+
+## Visibilities from voltages
+
+`correlate()` multiplies the inputs pairwise and then averages — in that
+order, which is what makes it a correlation. `tint_s=None` keeps the native
+32.768 us resolution; any other integration time rounds to whole samples.
+The raw snap dict is stacked along the input axis in (snap, adc) order and
+the labels come back in `.inputs`; a per-antenna array keeps its own order.
+
+```python
+from casm_io.voltage import correlate
+
+out = correlate(result.voltages, tint_s=0.01)
+out.vis           # (n_bin, n_chan, n_input, n_input) complex64
+out.time_s        # bin-centre seconds from the start of the array
+out.inputs        # [(snap, adc), ...] for dict input, None for array input
 ```
 
 Only the streams around the trigger are written. Streams with no data are

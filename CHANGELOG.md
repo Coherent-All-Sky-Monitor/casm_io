@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Sub-band selection, time offsets and seconds-based reads** (`voltage/reader.py`). `read_full_band()` takes `subbands=` (a contiguous stream selection), `time_offset=`, and `seconds=`/`offset_seconds=` alongside the sample counts. Reads go through `np.memmap`, so only the requested samples and SNAP slots are pulled off disk.
+
+- **`iter_full_band()`** yields `read_full_band()` results in RAM-sized chunks (gulp defaults to a fraction of MemAvailable), so long dumps are processed without holding the unpacked complex64 — 8x the disk size — in memory at once.
+
+- **`casm_io.voltage.correlate()`**. Visibilities from voltages at the native 32.768 us resolution (`tint_s=None`) or any integration time; multiplies pairwise before averaging by construction. Accepts the raw snap dict (stacked in (snap, adc) order, labels in `.inputs`) or a per-antenna array. Returns `CorrelateResult`.
+
+- **`casm-autocorr` console script** (`autocorr.py`). Accumulates a dump's mean power per SNAP/ADC in gulps, reads the correlator integration covering the dump window, and over-plots the two bandpasses per SNAP (dB relative to median), with progress and time ranges shown in UTC and Pacific time.
+
+- **Quickstart notebook** (`examples/voltage_quickstart.ipynb`): dump from Python (casm_t2 `dump_voltages`), read sub-bands/SNAPs, correlate, per-SNAP autocorrelation figures. `examples/voltage_dumps.py` reworked around it: raw SNAP layout by default, `--streams/--snaps/--gulp`, correlation opt-in via `--correlate`/`--out`.
+
 - **Triggered stream-layout voltage dumps** (`voltage/reader.py`, `voltage/configs/dada_format_stream.json`). `VoltageReader` reads dumps written to `stream_0 ... stream_5` (6 sub-bands x 512 channels, 484.375 -> 390.656 MHz after the 2026-03-27 band shift) as well as the legacy `chan0_1023 / chan1024_2047 / chan2048_3071` layout, choosing between them from the subdirectories in `data_dir`. A dump split over several files is ordered by the `OBS_OFFSET` in the filename and read as one timeline, so `n_time` counts from the start of the dump.
 
 - **`filled_subbands` on `FullBandResult`**. Only the streams around a trigger are written; sub-bands with no data are zero-filled with a warning and their indices returned, so a caller can record which part of the band is zeros. A dump with no data at all still raises.
