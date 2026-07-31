@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Dump CASM voltages and read them back.
 
+The interactive version of this walkthrough is
+examples/voltage_quickstart.ipynb, which triggers dumps from Python via
+casm_t2's dump_voltages(past_duration=...).
 
 Quickstart (on casm-corr1, from the offline venv):
 
@@ -17,13 +20,18 @@ they break if the originals in cand_dumps are deleted — copy them if the
 directory has to stand on its own), and prints the prefix ready-made as
 part of the exact ``VoltageReader(data_dir, prefix)`` call to use. Without
 it, scp the corr2 stream_N files over yourself and read the prefix off the
-filenames. The full prefix pins one dump even when several share a UTC_START, which
-otherwise has to be done by hand: filenames are
-``<UTC_START>_<byte offset>.<file number>.dada`` (seconds since start =
-offset / 2.0625e9), long dumps split into ~10 s files, and the reader
-refuses to stitch across the gap between two dumps that share a start time.
-A bare UTC_START (``2026-07-29-21:06:34``) also works as the prefix when
-only one dump has it.
+filenames. The full prefix pins one dump even when several share a
+UTC_START: filenames are ``<UTC_START>_<byte offset>.<file number>.dada``
+(seconds since start = offset / 2.0625e9), long dumps split into ~10 s
+files, and the reader refuses to stitch across the gap between two dumps
+that share a start time. A bare UTC_START (``2026-07-29-21:06:34``) also
+works as the prefix when only one dump has it.
+
+On disk each stream_N file is a 4096-byte ASCII header followed by one
+byte per complex sample (4+4-bit real/imag, two's complement), ordered
+time -> SNAP slot -> channel -> ADC. Files are pre-allocated; the header's
+DUMP_BYTES marks where the valid payload ends. The reader handles all of
+this — these details only matter if you parse the files yourself.
 
 More trigger forms (the daemon says OK before the disk check runs, so
 without --gather always confirm the files exist):
@@ -50,7 +58,8 @@ the full voltage array never exists in memory.
 Forming visibilities is optional and just an example: add --correlate (or
 --out file.npz, which implies it) to multiply the inputs pairwise and
 average over --tint; only the visibilities then accumulate across gulps.
-By default the script only reads, prints what it found, and exits.
+By default the script only reads, prints what it found, and exits. The
+same recipe as a function is casm_io.voltage.correlate().
 """
 
 import argparse
