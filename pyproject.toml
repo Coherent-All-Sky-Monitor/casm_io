@@ -25,7 +25,7 @@ sigpyproc = ["sigpyproc"]
 test = ["pytest"]
 
 [project.scripts]
-casm-autocorr = "casm_io.autocorr:main"
+casm-voltage-autocorr = "casm_io.autocorr:main"
 
 [tool.setuptools.packages.find]
 include = ["casm_io*"]
