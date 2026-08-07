@@ -26,6 +26,8 @@ test = ["pytest"]
 
 [project.scripts]
 casm-voltage-autocorr = "casm_io.autocorr:main"
+casm-beamdump-to-fil = "casm_io.filterbank.beam_dump:main"
+casm-fil-clean = "casm_io.filterbank.clean:main"
 
 [tool.setuptools.packages.find]
 include = ["casm_io*"]
