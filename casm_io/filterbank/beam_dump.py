@@ -203,7 +203,9 @@ def convert_beam_dump(
                 "machine_id": 0, "telescope_id": 0, "data_type": 1,
                 "nchans": nchan, "fch1": fch1, "foff": foff,
                 "tsamp": tsamp, "tstart": tstart,
-                "nbeams": nbeam, "ibeam": b, "nbits": 32, "nifs": 1,
+                # each output .fil holds ONE beam: nbeams must be 1 here, not
+                # the block beam count, or readers compute nsamples nbeam-x small
+                "nbeams": 1, "ibeam": b, "nbits": 32, "nifs": 1,
             })
         outnames.append(name)
         handles.append(open(name, "ab"))
