@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`correlate()` takes a stream of gulps** (`voltage/correlate.py`). Passing `reader.iter_full_band(...)` instead of an array returns a generator of `CorrelateResult`, one per gulp, so a dump too long to unpack correlates with the same call as a short one. Integration bins are carried across the gulp boundaries and `time_s` is a global axis, making the result bit-identical to a single whole-dump call for any gulp size (verified on a 4 GB dump and in tests). Gulps may be `FullBandResult`s, snap dicts, or arrays; the stream is lazy.
+
 - **Sub-band selection, time offsets and seconds-based reads** (`voltage/reader.py`). `read_full_band()` takes `subbands=` (a contiguous stream selection), `time_offset=`, and `seconds=`/`offset_seconds=` alongside the sample counts. Reads go through `np.memmap`, so only the requested samples and SNAP slots are pulled off disk.
 
 - **`iter_full_band()`** yields `read_full_band()` results in RAM-sized chunks (gulp defaults to a fraction of MemAvailable), so long dumps are processed without holding the unpacked complex64 — 8x the disk size — in memory at once.

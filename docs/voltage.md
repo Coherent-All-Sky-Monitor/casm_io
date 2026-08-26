@@ -88,6 +88,31 @@ out.time_s        # bin-centre seconds from the start of the array
 out.inputs        # [(snap, adc), ...] for dict input, None for array input
 ```
 
+### Correlating a dump too long to hold
+
+Hand `correlate()` the iterator instead of the array and it returns a
+generator of the same results, one per gulp:
+
+```python
+for out in correlate(reader.iter_full_band(snaps=[0, 3]), tint_s=0.001):
+    accumulate(out.vis, out.time_s)
+```
+
+Integration bins are carried across the gulp boundaries and `time_s` counts
+from the start of the stream, so the visibilities are bit-identical to one
+whole-dump call whatever the gulp size, including a gulp shorter than one
+integration. Nothing is read until the generator is advanced.
+
+Two things worth knowing at native resolution (`tint_s=None`):
+
+- 1 ms is 30.5 samples, so `tint_s=0.001` rounds to 31 samples (1.0158 ms).
+  `out.tint_samples` reports what was actually used.
+- The visibility cube goes as the square of the input count: 24 inputs over
+  the full band is 14.2 MB per sample, 432 GB per second. Reduce inside the
+  loop (average channels, keep the baselines you want) or write each gulp to
+  a `np.lib.format.open_memmap` on disk. Slicing the inputs before
+  correlating also cuts the einsum cost quadratically.
+
 Only the streams around the trigger are written. Streams with no data are
 zero-filled with a warning; the read fails only if no stream has data at all.
 Their indices come back in `result.filled_subbands`, so a script can record which

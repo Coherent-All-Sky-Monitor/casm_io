@@ -81,3 +81,91 @@ class TestCorrelateErrors:
     def test_nonpositive_tint_raises(self):
         with pytest.raises(ValueError, match=">= 1"):
             correlate(_ramp_array(), tint_samples=0)
+
+
+class TestCorrelateStream:
+    """A stream of gulps must give exactly what one whole array gives."""
+
+    @staticmethod
+    def _chunks(v, gulp):
+        return [v[i:i + gulp] for i in range(0, v.shape[0], gulp)]
+
+    @staticmethod
+    def _joined(outs):
+        outs = list(outs)
+        return (np.concatenate([o.vis for o in outs]),
+                np.concatenate([o.time_s for o in outs]))
+
+    @pytest.mark.parametrize("gulp", [1, 2, 5, 7, 30, 200])
+    def test_matches_whole_array_for_any_gulp(self, gulp):
+        rng = np.random.default_rng(0)
+        v = (rng.standard_normal((200, 5, 4))
+             + 1j * rng.standard_normal((200, 5, 4))).astype(np.complex64)
+        whole = correlate(v, tint_samples=7)
+        vis, time_s = self._joined(
+            correlate(iter(self._chunks(v, gulp)), tint_samples=7)
+        )
+        # bins straddle the gulp boundaries, so this is exact, not close
+        assert np.array_equal(vis, whole.vis)
+        np.testing.assert_allclose(time_s, whole.time_s)
+
+    def test_gulp_shorter_than_integration_is_buffered(self):
+        v = _ramp_array(n_time=12, n_chan=2, n_input=2)
+        whole = correlate(v, tint_samples=6)
+        vis, _ = self._joined(
+            correlate(iter(self._chunks(v, 2)), tint_samples=6)
+        )
+        assert vis.shape[0] == 2
+        assert np.array_equal(vis, whole.vis)
+
+    def test_tail_shorter_than_one_bin_is_dropped(self):
+        v = _ramp_array(n_time=10, n_chan=2, n_input=2)
+        vis, _ = self._joined(
+            correlate(iter(self._chunks(v, 3)), tint_samples=4)
+        )
+        assert vis.shape[0] == 2            # 10 samples -> 2 bins, 2 dropped
+
+    def test_time_axis_is_global_not_per_gulp(self):
+        v = _ramp_array(n_time=8, n_chan=2, n_input=2)
+        outs = list(correlate(iter(self._chunks(v, 2)), tint_samples=2))
+        time_s = np.concatenate([o.time_s for o in outs])
+        expected = (np.arange(4) + 0.5) * 2 * TSAMP_S
+        np.testing.assert_allclose(time_s, expected)
+
+    def test_snap_dict_gulps_keep_labels(self):
+        def gulps():
+            for _ in range(3):
+                yield {0: np.full((4, 2, 2), 1 + 0j, dtype=np.complex64),
+                       3: np.full((4, 2, 2), 3 + 0j, dtype=np.complex64)}
+        outs = list(correlate(gulps(), tint_samples=4))
+        assert len(outs) == 3
+        assert all(o.inputs == [(0, 0), (0, 1), (3, 0), (3, 1)] for o in outs)
+        np.testing.assert_allclose(outs[0].vis[0, 0, 0, 2], 3.0)
+
+    def test_full_band_result_gulps_are_unwrapped(self):
+        from casm_io._results import FullBandResult
+
+        def gulps():
+            for _ in range(2):
+                yield FullBandResult(
+                    voltages=_ramp_array(n_time=4, n_chan=2, n_input=2),
+                    header={}, freq_mhz=np.zeros(2), utc_start="",
+                    antenna_df=None,
+                )
+        outs = list(correlate(gulps(), tint_samples=4))
+        assert len(outs) == 2
+        assert outs[0].vis.shape == (1, 2, 2, 2)
+
+    def test_stream_is_lazy(self):
+        """Nothing is read until the generator is advanced."""
+        pulled = []
+
+        def gulps():
+            for k in range(3):
+                pulled.append(k)
+                yield _ramp_array(n_time=4, n_chan=2, n_input=2)
+
+        stream = correlate(gulps(), tint_samples=4)
+        assert pulled == []
+        next(stream)
+        assert pulled == [0]
