@@ -121,9 +121,12 @@ def correlate(voltages, tint_s: float | None = None,
     A dump too long to hold in memory correlates the same way as a short
     one, the read handing over gulps as it goes:
 
+    >>> vis_t, time_s = [], []
     >>> for out in correlate(reader.iter_full_band(snaps=[0, 3]),
     ...                      tint_s=0.001):
-    ...     accumulate(out.vis, out.time_s)
+    ...     vis_t.append(out.vis.mean(axis=1))   # (n_bin, n_input, n_input)
+    ...     time_s.append(out.time_s)
+    >>> vis_t = np.concatenate(vis_t)
 
     The integration bins do not care where the gulps fall, so the result
     matches a single whole-dump call sample for sample.

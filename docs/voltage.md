@@ -67,8 +67,10 @@ size), `iter_full_band()` yields the same reads in RAM-sized chunks — the
 gulp defaults to a fraction of the memory currently free:
 
 ```python
+power = 0
 for chunk in reader.iter_full_band(seconds=30, snaps=[0]):
-    accumulate(chunk.voltages)    # each chunk is a FullBandResult
+    v = chunk.voltages[0]         # each chunk is a FullBandResult
+    power = power + np.sum(v.real**2 + v.imag**2, axis=0)
 ```
 
 ## Visibilities from voltages
@@ -94,9 +96,17 @@ Hand `correlate()` the iterator instead of the array and it returns a
 generator of the same results, one per gulp:
 
 ```python
+vis_t, time_s = [], []
 for out in correlate(reader.iter_full_band(snaps=[0, 3]), tint_s=0.001):
-    accumulate(out.vis, out.time_s)
+    vis_t.append(out.vis.mean(axis=1))   # band-average -> (n_bin, n_in, n_in)
+    time_s.append(out.time_s)
+vis_t = np.concatenate(vis_t)
+time_s = np.concatenate(time_s)
 ```
+
+Reduce inside the loop, as above, or write each gulp to disk. Appending the
+raw `out.vis` just rebuilds the whole cube in RAM and undoes the point of
+streaming.
 
 Integration bins are carried across the gulp boundaries and `time_s` counts
 from the start of the stream, so the visibilities are bit-identical to one
