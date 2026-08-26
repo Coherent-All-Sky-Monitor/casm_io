@@ -114,6 +114,12 @@ For 0.05 s of 4 inputs that is `(1526, 3072, 4, 4)`, 600 MB in 2.3 s; the
 same read without `inputs=` is 24 inputs, 14.2 MB per sample, 432 GB per
 second of dump.
 
+`seconds=` here bounds **how much dump is read**, nothing to do with
+averaging. It is in this example only to keep the output small: dropping it
+reads the whole dump, and a 4 s dump with no averaging is 48 GB for those
+same 4 inputs. Read a window with `seconds=`/`offset_seconds=`, average with
+`tint_s=`, or write each gulp to disk; the three are independent choices.
+
 Integration bins are carried across the gulp boundaries and `time_s` counts
 from the start of the stream, so the visibilities are bit-identical to one
 whole-dump call whatever the gulp size, including a gulp shorter than one
