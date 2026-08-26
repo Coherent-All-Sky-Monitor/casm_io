@@ -30,20 +30,51 @@ def _resolve_tint(tint_s, tint_samples) -> int:
     return tint_samples
 
 
-def _as_inputs_array(voltages) -> tuple[np.ndarray, list | None]:
+def _as_inputs_array(voltages,
+                     inputs=None) -> tuple[np.ndarray, list | None]:
     """(n_time, n_chan, n_input) array and its labels from any gulp form.
 
     Accepts a FullBandResult, the raw snap dict, or an array already
-    stacked on the input axis.
+    stacked on the input axis. ``inputs`` keeps a subset of the input axis:
+    (snap, adc) pairs against the dict, column indices against an array.
+    Only the requested columns are stacked, so an unwanted ADC is never
+    copied and the einsum shrinks with the square of the count.
     """
     if hasattr(voltages, "voltages"):        # FullBandResult
         voltages = voltages.voltages
+
     if isinstance(voltages, dict):
+        if inputs is not None:
+            missing = [p for p in inputs
+                       if p[0] not in voltages
+                       or not 0 <= p[1] < voltages[p[0]].shape[2]]
+            if missing:
+                raise ValueError(
+                    f"(snap, adc) inputs {missing} are not in the data; "
+                    f"snaps read: {sorted(voltages)}"
+                )
+            v = np.stack([voltages[s][:, :, adc] for s, adc in inputs],
+                         axis=2)
+            return v, [tuple(p) for p in inputs]
         snaps = sorted(voltages)
         v = np.concatenate([voltages[s] for s in snaps], axis=2)
-        inputs = [(s, adc) for s in snaps
+        labels = [(s, adc) for s in snaps
                   for adc in range(voltages[s].shape[2])]
-        return v, inputs
+        return v, labels
+
+    if inputs is not None:
+        if any(isinstance(p, tuple) for p in inputs):
+            raise ValueError(
+                "(snap, adc) inputs need the snap dict; this read gave a "
+                "stacked array (antenna_csv=), so use column indices"
+            )
+        bad = [i for i in inputs if not 0 <= i < voltages.shape[2]]
+        if bad:
+            raise ValueError(
+                f"input indices {bad} are outside the "
+                f"{voltages.shape[2]} columns read"
+            )
+        voltages = voltages[:, :, list(inputs)]
     return voltages, None
 
 
@@ -57,7 +88,7 @@ def _correlate_block(v: np.ndarray, tint_samples: int) -> np.ndarray:
     return vis.astype(np.complex64)
 
 
-def _correlate_stream(chunks, tint_samples: int):
+def _correlate_stream(chunks, tint_samples: int, inputs=None):
     """Correlate a stream of gulps, bins spanning the gulp boundaries.
 
     Samples left over at the end of a gulp are carried into the next one,
@@ -65,12 +96,12 @@ def _correlate_stream(chunks, tint_samples: int):
     shorter than one integration is dropped, as it is for a single array.
     """
     buf = None
-    inputs = None
+    labels = None
     done = 0
     for chunk in chunks:
-        v, chunk_inputs = _as_inputs_array(chunk)
-        if inputs is None:
-            inputs = chunk_inputs
+        v, chunk_labels = _as_inputs_array(chunk, inputs)
+        if labels is None:
+            labels = chunk_labels
         if buf is not None and buf.shape[0]:
             v = np.concatenate([buf, v], axis=0)
         n_bin = v.shape[0] // tint_samples
@@ -82,12 +113,13 @@ def _correlate_stream(chunks, tint_samples: int):
         vis = _correlate_block(v[:used], tint_samples)
         time_s = (np.arange(n_bin) + 0.5) * tint_samples * TSAMP_S
         yield CorrelateResult(vis=vis, time_s=time_s + done * TSAMP_S,
-                              tint_samples=tint_samples, inputs=inputs)
+                              tint_samples=tint_samples, inputs=labels)
         done += used
 
 
 def correlate(voltages, tint_s: float | None = None,
-              tint_samples: int | None = None):
+              tint_samples: int | None = None,
+              inputs: list | None = None):
     """Visibilities from voltages: vis[t, f, i, j] = <v_i conj(v_j)>.
 
     Parameters
@@ -109,6 +141,14 @@ def correlate(voltages, tint_s: float | None = None,
     tint_samples : int, optional
         Integration length in samples; 1 (the default) keeps the native
         time resolution. Give this or tint_s, not both.
+    inputs : list, optional
+        Keep only these inputs, in this order: (snap, adc) pairs against
+        the snap dict, column indices against an array. Default: every
+        input read. The visibility cube and the work to build it both go
+        as the square of the input count, so this is the lever that keeps
+        a native-resolution correlation affordable. Selecting from the
+        dict stacks only the wanted columns, so an unused ADC is never
+        copied.
 
     Returns
     -------
@@ -130,14 +170,22 @@ def correlate(voltages, tint_s: float | None = None,
 
     The integration bins do not care where the gulps fall, so the result
     matches a single whole-dump call sample for sample.
+
+    At native resolution pick the inputs you want, or the cube is 14.2 MB
+    per sample for 24 inputs across the full band:
+
+    >>> for out in correlate(reader.iter_full_band(snaps=[0, 3]),
+    ...                      inputs=[(0, 0), (0, 1), (3, 0)]):
+    ...     out.vis          # (n_bin, n_chan, 3, 3)
+    ...     out.inputs       # [(0, 0), (0, 1), (3, 0)]
     """
     tint_samples = _resolve_tint(tint_s, tint_samples)
 
     if not isinstance(voltages, (np.ndarray, dict)) and \
             not hasattr(voltages, "voltages") and hasattr(voltages, "__iter__"):
-        return _correlate_stream(voltages, tint_samples)
+        return _correlate_stream(voltages, tint_samples, inputs)
 
-    v, inputs = _as_inputs_array(voltages)
+    v, labels = _as_inputs_array(voltages, inputs)
 
     n_bin = v.shape[0] // tint_samples
     if n_bin == 0:
@@ -149,4 +197,4 @@ def correlate(voltages, tint_s: float | None = None,
     vis = _correlate_block(v, tint_samples)
     time_s = (np.arange(n_bin) + 0.5) * tint_samples * TSAMP_S
     return CorrelateResult(vis=vis, time_s=time_s,
-                           tint_samples=tint_samples, inputs=inputs)
+                           tint_samples=tint_samples, inputs=labels)

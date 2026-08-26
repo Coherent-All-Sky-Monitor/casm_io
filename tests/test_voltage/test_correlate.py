@@ -169,3 +169,69 @@ class TestCorrelateStream:
         assert pulled == []
         next(stream)
         assert pulled == [0]
+
+
+class TestCorrelateInputSelection:
+    """inputs= must equal correlating everything and slicing after."""
+
+    @staticmethod
+    def _dict(n_time=40, n_chan=5, n_adc=4):
+        rng = np.random.default_rng(1)
+        def block():
+            return (rng.standard_normal((n_time, n_chan, n_adc))
+                    + 1j * rng.standard_normal((n_time, n_chan, n_adc))
+                    ).astype(np.complex64)
+        return {0: block(), 3: block()}
+
+    def test_matches_full_then_slice(self):
+        d = self._dict()
+        full = correlate(d, tint_samples=8)
+        sel = [(0, 0), (0, 3), (3, 1)]
+        idx = [full.inputs.index(p) for p in sel]
+        sub = correlate(d, tint_samples=8, inputs=sel)
+        ref = full.vis[:, :, idx, :][:, :, :, idx]
+        assert sub.vis.shape == (5, 5, 3, 3)
+        assert np.array_equal(sub.vis, ref)
+
+    def test_labels_follow_the_requested_order(self):
+        d = self._dict()
+        sel = [(3, 1), (0, 0)]
+        sub = correlate(d, tint_samples=8, inputs=sel)
+        assert sub.inputs == sel
+        # reversing the request reverses the cube
+        rev = correlate(d, tint_samples=8, inputs=sel[::-1])
+        assert np.array_equal(sub.vis[:, :, ::-1, ::-1], rev.vis)
+
+    def test_selection_survives_a_stream(self):
+        d = self._dict()
+        sel = [(0, 0), (3, 1)]
+        whole = correlate(d, tint_samples=8, inputs=sel)
+        gulps = [{0: d[0][i:i + 7], 3: d[3][i:i + 7]} for i in range(0, 40, 7)]
+        outs = list(correlate(iter(gulps), tint_samples=8, inputs=sel))
+        assert np.array_equal(np.concatenate([o.vis for o in outs]), whole.vis)
+        assert all(o.inputs == sel for o in outs)
+
+    def test_missing_input_raises(self):
+        with pytest.raises(ValueError, match="not in the data"):
+            correlate(self._dict(), tint_samples=8, inputs=[(0, 0), (7, 1)])
+
+    def test_out_of_range_adc_raises(self):
+        with pytest.raises(ValueError, match="not in the data"):
+            correlate(self._dict(), tint_samples=8, inputs=[(0, 99)])
+
+    def test_array_takes_column_indices(self):
+        v = _ramp_array(n_time=8, n_chan=2, n_input=4)
+        full = correlate(v, tint_samples=4)
+        sub = correlate(v, tint_samples=4, inputs=[0, 2])
+        assert sub.vis.shape == (2, 2, 2, 2)
+        assert np.array_equal(sub.vis, full.vis[:, :, [0, 2], :][:, :, :, [0, 2]])
+
+    def test_snap_adc_pairs_against_an_array_raise(self):
+        v = _ramp_array(n_time=8, n_chan=2, n_input=4)
+        with pytest.raises(ValueError, match="need the snap dict"):
+            correlate(v, tint_samples=4, inputs=[(0, 0)])
+
+    def test_array_index_out_of_range_raises(self):
+        v = _ramp_array(n_time=8, n_chan=2, n_input=4)
+        with pytest.raises(ValueError, match="outside the"):
+            correlate(v, tint_samples=4, inputs=[0, 9])

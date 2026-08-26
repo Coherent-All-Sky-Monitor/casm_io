@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`correlate(inputs=...)` selects the inputs to correlate**. (snap, adc) pairs against the snap dict, column indices against an array; the labels come back in `.inputs` in the requested order. The visibility cube and the einsum both go as the square of the input count, so this is what makes a native-resolution correlation affordable: 4 of 24 inputs over the full band is 600 MB and 2.3 s for 0.05 s of dump, against 14.2 MB per sample (432 GB/s) unselected. Only the requested columns are stacked, so an unused ADC is never copied.
+
 - **`correlate()` takes a stream of gulps** (`voltage/correlate.py`). Passing `reader.iter_full_band(...)` instead of an array returns a generator of `CorrelateResult`, one per gulp, so a dump too long to unpack correlates with the same call as a short one. Integration bins are carried across the gulp boundaries and `time_s` is a global axis, making the result bit-identical to a single whole-dump call for any gulp size (verified on a 4 GB dump and in tests). Gulps may be `FullBandResult`s, snap dicts, or arrays; the stream is lazy.
 
 - **Sub-band selection, time offsets and seconds-based reads** (`voltage/reader.py`). `read_full_band()` takes `subbands=` (a contiguous stream selection), `time_offset=`, and `seconds=`/`offset_seconds=` alongside the sample counts. Reads go through `np.memmap`, so only the requested samples and SNAP slots are pulled off disk.

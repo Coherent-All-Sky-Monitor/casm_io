@@ -96,32 +96,70 @@ Hand `correlate()` the iterator instead of the array and it returns a
 generator of the same results, one per gulp:
 
 ```python
-vis_t, time_s = [], []
-for out in correlate(reader.iter_full_band(snaps=[0, 3]), tint_s=0.001):
-    vis_t.append(out.vis.mean(axis=1))   # band-average -> (n_bin, n_in, n_in)
+KEEP = [(0, 0), (0, 1), (3, 0), (3, 1)]     # the (snap, adc) inputs you want
+
+vis, time_s = [], []
+for out in correlate(reader.iter_full_band(seconds=0.05, snaps=[0, 3]),
+                     inputs=KEEP):
+    vis.append(out.vis)                     # (n_bin, n_chan, 4, 4)
     time_s.append(out.time_s)
-vis_t = np.concatenate(vis_t)
+vis = np.concatenate(vis)
 time_s = np.concatenate(time_s)
 ```
 
-Reduce inside the loop, as above, or write each gulp to disk. Appending the
-raw `out.vis` just rebuilds the whole cube in RAM and undoes the point of
-streaming.
+That is a correlation with **no averaging at all**: native 32.768 us time
+resolution and all 3072 channels. `inputs=` is what makes it affordable, the
+cube and the work to build it both going as the square of the input count.
+For 0.05 s of 4 inputs that is `(1526, 3072, 4, 4)`, 600 MB in 2.3 s; the
+same read without `inputs=` is 24 inputs, 14.2 MB per sample, 432 GB per
+second of dump.
 
 Integration bins are carried across the gulp boundaries and `time_s` counts
 from the start of the stream, so the visibilities are bit-identical to one
 whole-dump call whatever the gulp size, including a gulp shorter than one
 integration. Nothing is read until the generator is advanced.
 
-Two things worth knowing at native resolution (`tint_s=None`):
+`inputs=` takes (snap, adc) pairs against the snap dict and column indices
+against an array read with `antenna_csv=`. The pairs come back in
+`out.inputs`, in the order you asked for, and only those columns are ever
+stacked.
 
-- 1 ms is 30.5 samples, so `tint_s=0.001` rounds to 31 samples (1.0158 ms).
-  `out.tint_samples` reports what was actually used.
-- The visibility cube goes as the square of the input count: 24 inputs over
-  the full band is 14.2 MB per sample, 432 GB per second. Reduce inside the
-  loop (average channels, keep the baselines you want) or write each gulp to
-  a `np.lib.format.open_memmap` on disk. Slicing the inputs before
-  correlating also cuts the einsum cost quadratically.
+### Averaging in time
+
+Add `tint_s=`. It rounds to whole samples and `out.tint_samples` reports
+what was used: 1 ms is 30.5 samples, so it becomes 31 (1.0158 ms).
+
+```python
+for out in correlate(reader.iter_full_band(seconds=0.05, snaps=[0, 3]),
+                     inputs=KEEP, tint_s=0.001):
+    vis.append(out.vis)                     # (49, 3072, 4, 4), 19.3 MB
+```
+
+### Averaging in frequency
+
+Frequency is axis 1, and `correlate()` does not touch it, so bin it yourself
+inside the loop. Whole band:
+
+```python
+    vis.append(out.vis.mean(axis=1))        # (n_bin, 4, 4)
+```
+
+or in groups of `n_f` channels, keeping some spectral resolution:
+
+```python
+    v = out.vis
+    vis.append(v.reshape(v.shape[0], v.shape[1] // n_f, n_f, *v.shape[2:])
+                .mean(axis=2))              # n_f=16 -> (1526, 192, 4, 4)
+```
+
+The two are independent: `tint_s` averages time, the reshape averages
+frequency, and either can be used without the other. Average the
+visibilities, never the voltages. Note that band-averaging a cross-baseline
+decoheres across 93.75 MHz unless the delay has been taken out first.
+
+Reduce inside the loop or write each gulp to a
+`np.lib.format.open_memmap` on disk. Appending the raw `out.vis` for a long
+dump just rebuilds the whole cube in RAM and undoes the point of streaming.
 
 Only the streams around the trigger are written. Streams with no data are
 zero-filled with a warning; the read fails only if no stream has data at all.
