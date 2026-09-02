@@ -31,9 +31,11 @@ result = read_visibilities(
 | `fmt` | VisibilityFormat or None | `None` | Required for headerless files before 2026-03-04; auto-detected from header otherwise |
 | `ref` | int or None | `None` | Reference correlator input index for baseline extraction |
 | `targets` | list[int] or None | `None` | Target input indices; defaults to all non-ref inputs when `ref` is set |
+| `inputs` | list[int] or None | `None` | Keep every baseline among these correlator inputs, autos included; mutually exclusive with `ref`/`targets`. See "Input subset" below |
 | `freq_order` | str | `"descending"` | Recommended: `"descending"` (CASM native, highest channel first) |
 | `channels` | tuple(int, int) or None | `None` | `(ch_start, ch_end)` in native descending order; exclusive end; mutually exclusive with `freq_range_mhz` |
 | `freq_range_mhz` | tuple(float, float) or None | `None` | `(freq_lo, freq_hi)` in MHz; mutually exclusive with `channels` |
+| `workers` | int or None | `None` | Files read in parallel; default `min(8, n_files)`. See "Parallel reads" below |
 | `verbose` | bool | `True` | Recommended `True` for interactive use; prints time spans, gap warnings, shapes |
 
 ### Return value
@@ -92,6 +94,39 @@ result = read_visibilities(
 
 When `ref` is set and `targets` is omitted, all other inputs are used as targets (full row of the correlation matrix).
 
+### Input subset (`inputs=`)
+
+`inputs=[...]` keeps every baseline among the given correlator inputs, including autocorrelations, without pulling in the rest of the array. The output is the upper triangle of the sorted, de-duplicated selection, so `inputs=[5, 1, 4]` and `inputs=[1, 4, 5, 5]` give identical results with `metadata["inputs"] == [1, 4, 5]`.
+
+```python
+result = read_visibilities(..., inputs=[1, 4, 5, 12, 30])
+n = len(result.metadata["inputs"])          # sorted, de-duplicated selection
+n_bl = n * (n + 1) // 2                     # result.vis.shape[2]
+
+from casm_io.correlator.baselines import triu_flat_index
+rank_i, rank_j = 0, 2                       # positions within the sorted selection
+bl_idx = triu_flat_index(n, rank_i, rank_j)
+v = result.vis[:, :, bl_idx]
+```
+
+`inputs` is mutually exclusive with `ref`/`targets`; passing both raises `ValueError`. `metadata["nsig_subset"]` records the subset size and `metadata["baseline_convention"]` spells out the indexing rule.
+
+### Parallel reads (`workers=`)
+
+Files are read in parallel by default. `workers` sets how many files are read concurrently; it defaults to `min(8, n_files)` and is overridden by the `CASM_IO_WORKERS` environment variable. Results are assembled in file order, so output does not depend on the worker count.
+
+The executor is a thread pool by default (`CASM_IO_EXECUTOR=thread`); set `CASM_IO_EXECUTOR=process` to use a process pool instead. On a 3 x 6.5 GB layout-subset read (18 inputs), threads and processes measured the same (25.4 s vs 24.1 s mean over 3 cold runs), since the work is IO-bound on memmap page-in — threads are the default because they avoid the fork and the pickling of result arrays.
+
+```python
+result = read_visibilities(..., inputs=[...], workers=4)
+```
+
+```bash
+CASM_IO_WORKERS=4 CASM_IO_EXECUTOR=process python my_script.py
+```
+
+Approximate benchmark results (not guaranteed, but illustrative of the scale of the speedup): a 3-file layout-subset read went from 1554 s with the old full-file read to 80 s at one worker on the new memmap path, and to 27 s at three workers. A 24-hour, 17-antenna waterfall build took 3 min 19 s end to end.
+
 ### Single baseline from the full matrix
 
 ```python
@@ -145,6 +180,8 @@ All parameters from `read_visibilities` apply, plus:
 |-----------|------|---------|-------|
 | `nfiles` | int or None | `None` | Read exactly this many files; mutually exclusive with `time_end` |
 | `skip_nfiles` | int | `0` | Skip this many files before reading; requires `nfiles` |
+| `inputs` | list[int] or None | `None` | Same as `read_visibilities`; see "Input subset" above |
+| `workers` | int or None | `None` | Same as `read_visibilities`; see "Parallel reads" above |
 
 Parameter combinations:
 
@@ -158,6 +195,10 @@ Parameter combinations:
 | `skip_nfiles=...` without `nfiles` | No: skip requires nfiles |
 
 Missing files within a `nfiles` request are zero-filled with a warning. Missing files within a time-range request raise `RuntimeError`.
+
+## Memmap subset reads
+
+A file is read through `np.memmap` instead of `np.fromfile` whenever a channel range (`channels`/`freq_range_mhz`) or a baseline subset (`ref`/`targets` or `inputs`) is requested. Only the requested channels and baselines are fancy-indexed out of the memmap and converted to `complex64`; the full file is never materialized in memory. The full `np.fromfile` read of the whole file runs only when neither channels nor baselines are subset. This is what makes the `workers=`/`inputs=` combination fast on large files (see benchmark numbers above).
 
 ## Format configurations
 
@@ -247,6 +288,10 @@ Pass `verbose=False` to silence all output.
 **`nfiles` and `time_end` are mutually exclusive** in `VisibilityReader.read()`. Passing both raises `ValueError`.
 
 **Frequency order**: native order is descending (highest channel first). Channel 0 is the highest frequency. `freq_range_to_channels(lo, hi)` returns `(ch_start, ch_end)` where `ch_start` corresponds to `freq_hi` because higher frequency = lower channel index.
+
+## Known issues
+
+**`OverflowError: memory mapped length must be positive` on a window spanning a part-0/part-1 file boundary.** Observed on obs `2026-09-02-01:22:46` for the window 01:48-02:28 UTC. Open bug, not yet fixed.
 
 ## Low-level utilities
 

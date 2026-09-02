@@ -58,6 +58,42 @@ plot_dedispersed_waterfall(fb.data, fb.header, dm=500.0,
                            output_path="frb_inspection.png")
 ```
 
+## Splitting a time range
+
+```python
+from casm_io.filterbank import split_filterbank
+
+result = split_filterbank(
+    "/path/to/beam.fil",
+    "/path/to/beam_split.fil",
+    start_sample=50,      # first sample to extract (0-indexed), default 0
+    nsamples=80,          # None reads to end of file
+    beam=None,            # beam index for a multibeam file; defaults to 0
+    verbose=True,
+)
+print(result["nsamples_written"], result["header"], result["filepath"])
+```
+
+Reads `[start_sample, start_sample + nsamples)` via seek + `fromfile`, so the whole file is never loaded into memory. `tstart` in the output header is shifted forward by `start_sample * tsamp / 86400` (days) and `nsamples`/`nbeams` are updated to match. `start_sample`/`nsamples` out of range raise `ValueError`. Sub-byte filterbanks (`nbits < 8`) are not supported.
+
+## Requantizing bit depth
+
+```python
+from casm_io.filterbank import requantize_filterbank
+
+result = requantize_filterbank(
+    "/path/to/beam_32bit.fil",
+    "/path/to/beam_8bit.fil",
+    target_nbits=8,       # 8 or 16
+    sigma_clip=4.0,       # std devs mapped to half the output range
+    beam=None,            # beam index for a multibeam file
+    verbose=True,
+)
+print(result["backend_used"], result["per_channel_stats"])
+```
+
+Converts between bit depths (e.g. 32-bit float to 8-bit unsigned int) with a per-channel linear mapping: each channel's median maps to the output mid-range value (127.5 for 8-bit) and `+/- sigma_clip` standard deviations span the full output range. This preserves the bandpass shape, since channels with higher power keep higher mean values in the output. Channels with zero standard deviation ("dead" channels) are written as all zeros. `per_channel_stats` returns `median`, `std`, and `scale` arrays per channel. The on-disk header is rebuilt from the raw SIGPROC header rather than sigpyproc's parsed header, to avoid derived keys (`accel`, `bandwidth`, `fbottom`, `ftop`, `obs_time`, `period`) that break round-tripping.
+
 ## Backend traceability
 
 Both `FilterbankFile` and `write_filterbank` expose `backend_used` (`"sigpyproc"` or `"standalone"`). Check this when debugging read/write issues.

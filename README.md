@@ -48,13 +48,16 @@ result = read_visibilities(..., channels=(631, 1443))
 # All baselines toward a reference input
 result = read_visibilities(..., ref=10, targets=[0, 1, 2, 5])
 
+# Every baseline among a set of inputs (autos included), upper-triangle ordered
+result = read_visibilities(..., inputs=[1, 4, 5, 12, 30])
+
 # Single (i, j) baseline from the full matrix
 from casm_io.correlator.baselines import triu_flat_index
 bl_idx = triu_flat_index(nsig, min(i, j), max(i, j))
 v_pair = result.vis[:, :, bl_idx]   # (T, F) complex64
 ```
 
-`channels` and `freq_range_mhz` are mutually exclusive. See [docs/correlator.md](docs/correlator.md) for full parameter reference.
+`channels` and `freq_range_mhz` are mutually exclusive; `inputs` and `ref`/`targets` are mutually exclusive. A channel range or baseline subset (`ref`/`targets` or `inputs`) reads through `np.memmap` so only the requested slice is pulled off disk. Files are read in parallel by default (`workers=`, or `CASM_IO_WORKERS`/`CASM_IO_EXECUTOR` env vars); see [docs/correlator.md](docs/correlator.md) for full parameter reference, the parallel-read benchmark numbers, and known issues.
 
 ## Antenna mapping
 
@@ -133,6 +136,17 @@ print(fb.nchans, fb.nsamples)
 data = fb.data                 # (nsamples, nchans) float32, lazy load
 ```
 
+Extract a time range or change bit depth without loading the whole file:
+
+```python
+from casm_io.filterbank import split_filterbank, requantize_filterbank
+
+split_filterbank("/path/to/beam.fil", "/path/to/beam_split.fil",
+                 start_sample=50, nsamples=80)
+requantize_filterbank("/path/to/beam_32bit.fil", "/path/to/beam_8bit.fil",
+                      target_nbits=8)
+```
+
 See [docs/filterbank.md](docs/filterbank.md).
 
 ## Candidates
@@ -161,7 +175,7 @@ python -m pytest tests/ -v
 ## Documentation
 
 - [Sign & ordering conventions](docs/CONVENTIONS.md) — the sign, ordering, and indexing rules every CASM offline package follows
-- [Correlator visibilities](docs/correlator.md)
+- [Correlator visibilities](docs/correlator.md) — includes `inputs=`/`workers=`, memmap subset reads, and known issues
 - [Antenna mapping](docs/antenna_mapping.md)
 - [Voltage DADA files](docs/voltage.md)
 - [Filterbank files](docs/filterbank.md)
