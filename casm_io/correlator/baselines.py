@@ -95,6 +95,50 @@ def build_baseline_plan(
     return bl_indices, conjugate
 
 
+def build_input_subset_plan(
+    inputs, nsig: int
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """
+    Build an extraction plan for the full upper triangle of an input subset.
+
+    Selects every pair (i, j), i <= j, among the requested correlator inputs,
+    ordered exactly like the upper triangle of a matrix whose inputs are the
+    sorted selection. A caller can therefore treat the result as a complete
+    visibility set with ``nsig = len(sel)`` and re-use
+    :func:`triu_flat_index` on the ranks of the selected inputs.
+
+    Parameters
+    ----------
+    inputs : sequence of int
+        Correlator input indices to keep. Duplicates are collapsed.
+    nsig : int
+        Number of correlator inputs in the stored data.
+
+    Returns
+    -------
+    bl_indices : np.ndarray
+        Flat indices into the stored triangular vector.
+    conjugate : np.ndarray
+        All False: pairs are taken as stored with i <= j.
+    sel : list of int
+        The sorted, de-duplicated input indices, in output order.
+    """
+    sel = sorted({int(i) for i in inputs})
+    if not sel:
+        raise ValueError("inputs must not be empty")
+    if sel[0] < 0 or sel[-1] >= nsig:
+        raise ValueError(f"Some inputs out of range 0..{nsig - 1}")
+
+    bl_indices = np.empty(len(sel) * (len(sel) + 1) // 2, dtype=np.int64)
+    k = 0
+    for a_pos, a in enumerate(sel):
+        for b in sel[a_pos:]:
+            bl_indices[k] = triu_flat_index(nsig, a, b)
+            k += 1
+    conjugate = np.zeros(len(bl_indices), dtype=bool)
+    return bl_indices, conjugate, sel
+
+
 def extract_baselines(
     data: np.ndarray,
     bl_indices: np.ndarray,
