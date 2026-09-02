@@ -6,6 +6,7 @@ Files are named like: {base_str}.dat.{index} where index is 0, 1, 2, ...
 Each file contains ntime_per_file integrations of nchan x n_baselines x 2 (re/im) int32s.
 """
 
+import concurrent.futures as _futures
 import gc
 import glob
 import os
@@ -54,6 +55,128 @@ def _format_duration(seconds: float) -> str:
         d = int(seconds // 86400)
         h = int((seconds % 86400) // 3600)
         return f"{d}d {h}h" if h else f"{d}d"
+
+
+_DEFAULT_MAX_WORKERS = 8
+
+# Executor kind for parallel file reads. Measured on 3 x 6.5 GB files with an
+# 18-input layout subset: threads 25.4 s mean, processes 24.1 s mean (3 runs
+# each, cold files) — the work is IO-bound on memmap page-in, so the two are
+# even. Threads are the default: no fork, no pickling of the result arrays.
+# Override with CASM_IO_EXECUTOR=process.
+_DEFAULT_EXECUTOR = "thread"
+
+
+def _resolve_workers(workers: int | None, n_files: int) -> int:
+    """Resolve the worker count: explicit arg > CASM_IO_WORKERS > min(8, n_files)."""
+    if workers is None:
+        env = os.environ.get("CASM_IO_WORKERS")
+        if env:
+            try:
+                workers = int(env)
+            except ValueError:
+                warnings.warn(
+                    f"Ignoring invalid CASM_IO_WORKERS={env!r}", stacklevel=3
+                )
+    if workers is None:
+        workers = min(_DEFAULT_MAX_WORKERS, n_files)
+    workers = int(workers)
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1, got {workers}")
+    return max(1, min(workers, max(1, n_files)))
+
+
+def _make_executor(workers: int):
+    """Executor for parallel file reads (thread by default, see _DEFAULT_EXECUTOR)."""
+    kind = os.environ.get("CASM_IO_EXECUTOR", _DEFAULT_EXECUTOR).lower()
+    if kind.startswith("proc"):
+        return _futures.ProcessPoolExecutor(max_workers=workers)
+    return _futures.ThreadPoolExecutor(max_workers=workers)
+
+
+def _read_file_chunk(task):
+    """
+    Read one .dat file and return its complex visibility chunk.
+
+    Worker entry point for both the sequential and the parallel path; it must
+    stay a module-level function so a ProcessPoolExecutor can pickle it.
+
+    Parameters
+    ----------
+    task : tuple
+        (fpath, nchan, nbaseline, ch_start, ch_end, s0, s1, bl_idx, bl_conj,
+         use_memmap, freq_order)
+
+    Returns
+    -------
+    tuple
+        (v, ntime, s1_capped, file_header) with v complex64 of shape
+        (s1_capped - s0, nchan_read, n_output).
+
+    Notes
+    -----
+    Baseline ordering and conjugation follow docs/CONVENTIONS.md: the stored
+    upper triangle is indexed with the plan from
+    `baselines.build_baseline_plan`, and `V[j, i]` (j > i) is the conjugate of
+    the stored `V[i, j]`.
+    """
+    (fpath, nchan, nbaseline, ch_start, ch_end, s0, s1,
+     bl_idx, bl_conj, use_memmap, freq_order) = task
+
+    offset, file_header = get_header_offset(fpath)
+    denom = nchan * nbaseline * 2  # int32 count per integration
+
+    if use_memmap:
+        # Memory-mapped read: materialize only the requested channels and
+        # baselines, never the whole file.
+        data_bytes = os.path.getsize(fpath) - offset
+        ntime = data_bytes // (denom * 4)
+        if ntime == 0:
+            raise ValueError(f"File {fpath} too small for even one integration")
+
+        mm = np.memmap(
+            fpath, dtype=np.int32, mode='r', offset=offset,
+            shape=(ntime, nchan, nbaseline, 2),
+        )
+        # Cap slice to actual integrations available
+        s1_capped = min(s1, ntime)
+        if bl_idx is None:
+            xcorrs = np.array(mm[s0:s1_capped, ch_start:ch_end, :, :])
+        else:
+            xcorrs = np.array(mm[s0:s1_capped, ch_start:ch_end, bl_idx, :])
+        del mm
+    else:
+        # Full read path: neither channels nor baselines were subset.
+        raw = np.fromfile(fpath, dtype=np.int32, offset=offset)
+        if raw.size % denom != 0:
+            raise ValueError(
+                f"File {fpath} has {raw.size} int32s, not divisible by {denom}"
+            )
+
+        ntime = raw.size // denom
+        if ntime == 0:
+            raise ValueError(
+                f"File {fpath} too small for even one integration"
+            )
+
+        # Cap slice to actual integrations available
+        s1_capped = min(s1, ntime)
+
+        xcorrs = raw.reshape(ntime, nchan, nbaseline, 2)
+        del raw
+        xcorrs = xcorrs[s0:s1_capped, :, :, :]
+
+    # Reduced array only: no full-size float copy is made when a subset is asked for.
+    v = xcorrs[..., 0].astype(np.float32) + 1j * xcorrs[..., 1].astype(np.float32)
+    del xcorrs
+    if bl_idx is not None and np.any(bl_conj):
+        v[:, :, bl_conj] = np.conj(v[:, :, bl_conj])
+
+    # Apply frequency ordering
+    if freq_order == "ascending":
+        v = v[:, ::-1, :]
+
+    return v.astype(np.complex64), ntime, s1_capped, file_header
 
 
 def _resolve_channels(
@@ -201,9 +324,11 @@ def read_visibilities(
     fmt: VisibilityFormat | None = None,
     ref: int | None = None,
     targets: list[int] | None = None,
+    inputs: list[int] | None = None,
     freq_order: str = "descending",
     channels: tuple[int, int] | None = None,
     freq_range_mhz: tuple[float, float] | None = None,
+    workers: int | None = None,
     verbose: bool = True,
 ) -> VisibilityResult:
     """
@@ -232,6 +357,9 @@ def read_visibilities(
         Reference input index for baseline extraction.
     targets : list of int, optional
         Target input indices.
+    inputs : list of int, optional
+        Keep every baseline among these correlator inputs (see
+        VisibilityReader.read). Mutually exclusive with ref/targets.
     freq_order : str
         'descending' (default, native) or 'ascending'.
     channels : tuple of (int, int), optional
@@ -240,6 +368,10 @@ def read_visibilities(
     freq_range_mhz : tuple of (float, float), optional
         (freq_lo, freq_hi) frequency range in MHz.
         Mutually exclusive with channels.
+    workers : int, optional
+        Number of files read in parallel per observation. Default
+        min(8, n_files); CASM_IO_WORKERS overrides. The result does not
+        depend on the worker count.
     verbose : bool
         Print progress and diagnostic messages.
 
@@ -418,9 +550,11 @@ def read_visibilities(
             time_tz="UTC",
             ref=ref,
             targets=targets,
+            inputs=inputs,
             freq_order=freq_order,
             channels=channels,
             freq_range_mhz=freq_range_mhz,
+            workers=workers,
             verbose=verbose,
         )
 
@@ -597,13 +731,19 @@ class VisibilityReader:
         skip_nfiles: int = 0,
         ref: int | None = None,
         targets: list[int] | None = None,
+        inputs: list[int] | None = None,
         freq_order: str = "descending",
         channels: tuple[int, int] | None = None,
         freq_range_mhz: tuple[float, float] | None = None,
+        workers: int | None = None,
         verbose: bool = True,
     ) -> VisibilityResult:
         """
         Read visibility data from .dat files.
+
+        Files whose channels or baselines are subset are read through
+        `np.memmap`, so only the requested channels and baselines are pulled
+        off disk and converted. Files are read in parallel by default.
 
         Parameters
         ----------
@@ -622,6 +762,12 @@ class VisibilityReader:
             Reference input index for baseline extraction.
         targets : list of int, optional
             Target input indices.
+        inputs : list of int, optional
+            Keep every baseline among these correlator inputs, including
+            autocorrelations, ordered as the upper triangle of the sorted
+            selection. Mutually exclusive with ref/targets. The output can be
+            indexed with `triu_flat_index(len(inputs), rank_i, rank_j)` where
+            rank is the position of an input in the sorted selection.
         freq_order : str
             'descending' (default, native) or 'ascending'.
         channels : tuple of (int, int), optional
@@ -630,6 +776,11 @@ class VisibilityReader:
         freq_range_mhz : tuple of (float, float), optional
             (freq_lo, freq_hi) frequency range in MHz.
             Mutually exclusive with channels.
+        workers : int, optional
+            Number of files to read in parallel. Default min(8, n_files),
+            overridden by the CASM_IO_WORKERS environment variable. Results
+            are assembled in file order, so the output is independent of
+            the worker count.
         verbose : bool
             Print progress messages.
 
@@ -654,7 +805,6 @@ class VisibilityReader:
 
         # Resolve channel slicing
         ch_slice = _resolve_channels(fmt, channels, freq_range_mhz)
-        use_memmap = ch_slice is not None
         if ch_slice is not None:
             ch_start, ch_end = ch_slice
             nchan_read = ch_end - ch_start
@@ -790,15 +940,27 @@ class VisibilityReader:
         nbaseline = fmt.n_baselines
         bl_idx = None
         bl_conj = None
-        extract_specific = ref is not None
+        sel_inputs = None
+        if inputs is not None and ref is not None:
+            raise ValueError("inputs and ref/targets are mutually exclusive")
+        extract_specific = ref is not None or inputs is not None
 
-        if extract_specific:
+        if inputs is not None:
+            bl_idx, bl_conj, sel_inputs = baselines.build_input_subset_plan(
+                inputs, fmt.nsig
+            )
+            n_output = len(bl_idx)
+        elif extract_specific:
             if targets is None:
                 targets = [i for i in range(fmt.nsig) if i != ref]
             bl_idx, bl_conj = baselines.build_baseline_plan(ref, targets, fmt.nsig)
             n_output = len(targets)
         else:
             n_output = nbaseline
+
+        # Memmap whenever a channel range OR a baseline subset is requested:
+        # both let us materialize a fraction of the file instead of all of it.
+        use_memmap = ch_slice is not None or extract_specific
 
         # Determine integration slicing for non-nfiles mode
         if nfiles is None:
@@ -811,23 +973,50 @@ class VisibilityReader:
             k_start = needed_file_idxs[0] * fmt.ntime_per_file
             k_stop = (needed_file_idxs[-1] + 1) * fmt.ntime_per_file
 
-        # Read files
-        vis_chunks = []
-        time_chunks = []
-        kept_files = []
-        file_headers = {}
-
-        denom = fmt.nchan * nbaseline * 2  # int32 count per integration
-
-        for file_num, file_idx in enumerate(needed_file_idxs):
-            if verbose:
-                print_progress(file_num + 1, len(needed_file_idxs), prefix="Reading files")
+        # Plan the reads: one entry per file that contributes integrations.
+        plan = []
+        for file_idx in needed_file_idxs:
             k0 = file_idx * fmt.ntime_per_file
             k1 = (file_idx + 1) * fmt.ntime_per_file
             s0 = max(k_start, k0) - k0
             s1 = min(k_stop, k1) - k0
             if s1 <= s0:
                 continue
+            plan.append((file_idx, s0, s1))
+
+        present = [e for e in plan if e[0] in self._idx_to_path]
+        n_workers = _resolve_workers(workers, len(present))
+
+        tasks = [
+            (
+                self._idx_to_path[file_idx], fmt.nchan, nbaseline,
+                ch_start, ch_end, s0, s1, bl_idx, bl_conj,
+                use_memmap, freq_order,
+            )
+            for file_idx, s0, s1 in present
+        ]
+
+        if verbose and n_workers > 1:
+            print(f"Reading {len(tasks)} files with {n_workers} workers")
+
+        if n_workers > 1 and len(tasks) > 1:
+            with _make_executor(n_workers) as ex:
+                # executor.map preserves submission order, so the assembled
+                # result is identical to the sequential read.
+                results = list(ex.map(_read_file_chunk, tasks))
+        else:
+            results = [_read_file_chunk(t) for t in tasks]
+
+        # Assemble in file order
+        vis_chunks = []
+        time_chunks = []
+        kept_files = []
+        file_headers = {}
+        res_iter = iter(results)
+
+        for file_num, (file_idx, s0, s1) in enumerate(plan):
+            if verbose:
+                print_progress(file_num + 1, len(plan), prefix="Reading files")
 
             if file_idx not in self._idx_to_path:
                 # Zero-fill missing file
@@ -846,8 +1035,8 @@ class VisibilityReader:
                 continue
 
             fpath = self._idx_to_path[file_idx]
+            v, ntime, s1_capped, file_header = next(res_iter)
 
-            offset, file_header = get_header_offset(fpath)
             if file_header is not None:
                 file_headers[file_idx] = file_header
                 # Cross-validate header vs format when fmt was explicitly passed
@@ -865,61 +1054,9 @@ class VisibilityReader:
                             stacklevel=2,
                         )
 
-            if use_memmap:
-                # Memory-mapped read: only load requested channels
-                file_size = os.path.getsize(fpath)
-                data_bytes = file_size - offset
-                ntime = data_bytes // (fmt.nchan * nbaseline * 2 * 4)
-                if ntime == 0:
-                    raise ValueError(f"File {fpath} too small for even one integration")
-
-                mm = np.memmap(
-                    fpath, dtype=np.int32, mode='r', offset=offset,
-                    shape=(ntime, fmt.nchan, nbaseline, 2),
-                )
-                # Cap slice to actual integrations available
-                s1_capped = min(s1, ntime)
-                xcorrs = np.array(mm[s0:s1_capped, ch_start:ch_end, :, :])
-                del mm
-            else:
-                # Full read path (unchanged from original)
-                raw = np.fromfile(fpath, dtype=np.int32, offset=offset)
-                if raw.size % denom != 0:
-                    raise ValueError(
-                        f"File {fpath} has {raw.size} int32s, not divisible by {denom}"
-                    )
-
-                ntime = raw.size // denom
-                if ntime == 0:
-                    raise ValueError(
-                        f"File {fpath} too small for even one integration"
-                    )
-
-                # Cap slice to actual integrations available
-                s1_capped = min(s1, ntime)
-
-                xcorrs = raw.reshape(ntime, fmt.nchan, nbaseline, 2)
-                del raw
-                xcorrs = xcorrs[s0:s1_capped, :, :, :]
-
             if ntime != fmt.ntime_per_file and verbose:
                 print(f"  {os.path.basename(fpath)}: ntime={ntime} "
                       f"(expected {fmt.ntime_per_file})")
-
-            if extract_specific:
-                xsel = xcorrs[:, :, bl_idx, :]
-                del xcorrs
-                v = xsel[..., 0].astype(np.float32) + 1j * xsel[..., 1].astype(np.float32)
-                del xsel
-                if np.any(bl_conj):
-                    v[:, :, bl_conj] = np.conj(v[:, :, bl_conj])
-            else:
-                v = xcorrs[..., 0].astype(np.float32) + 1j * xcorrs[..., 1].astype(np.float32)
-                del xcorrs
-
-            # Apply frequency ordering
-            if freq_order == "ascending":
-                v = v[:, ::-1, :]
 
             # Build times
             t_file_start = t0_unix + file_idx * file_dur_s
@@ -928,10 +1065,12 @@ class VisibilityReader:
             )
             t_sel = t_local[s0:s1_capped]
 
-            vis_chunks.append(v.astype(np.complex64))
+            vis_chunks.append(v)
             time_chunks.append(t_sel)
             kept_files.append(os.path.basename(fpath))
-            gc.collect()
+
+        del results, tasks
+        gc.collect()
 
         if not vis_chunks:
             raise RuntimeError("No data collected after slicing")
@@ -963,7 +1102,14 @@ class VisibilityReader:
             metadata["channels"] = (ch_start, ch_end)
         if freq_range_mhz is not None:
             metadata["freq_range_mhz"] = freq_range_mhz
-        if extract_specific:
+        if sel_inputs is not None:
+            metadata["inputs"] = sel_inputs
+            metadata["nsig_subset"] = len(sel_inputs)
+            metadata["baseline_convention"] = (
+                "upper triangle (with autos) of the sorted inputs, "
+                "triu_flat_index(len(inputs), rank_i, rank_j)"
+            )
+        elif extract_specific:
             metadata["ref"] = ref
             metadata["targets"] = targets
             metadata["baseline_convention"] = "V(ref,target) with conjugation when ref>target"
